@@ -2,5 +2,13 @@
 name = "crowbar"
 version = "0.1.0"
 authors = ["Christian Dürr <contact@christianduerr.com>"]
+build = "build.rs"
+
+[build-dependencies]
+wayland-scanner = "0.7.6"
 
 [dependencies]
+wayland-client = "0.7.6"
+wayland-sys = "0.7.6"
+byteorder = "0.5.3"
+tempfile = "2.1.4"
