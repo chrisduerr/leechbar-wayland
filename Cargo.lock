@@ -3,6 +3,7 @@ name = "crowbar"
 version = "0.1.0"
 dependencies = [
  "byteorder 0.5.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rand 0.3.15 (registry+https://github.com/rust-lang/crates.io-index)",
  "tempfile 2.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "wayland-client 0.7.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "wayland-scanner 0.7.6 (registry+https://github.com/rust-lang/crates.io-index)",
