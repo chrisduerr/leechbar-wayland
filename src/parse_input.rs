@@ -1,11 +1,183 @@
-// loop {
-// let mut buffer = String::new();
-// match io::stdin().read_line(&mut buffer) {
-// Ok(n) => {
-// if (n > 0) {
-// println!("{}", buffer);
-// }
-// },
-// Err(_) => println!("err"),
-// };
-// }
+use std::sync::mpsc::Sender;
+use image::Rgba;
+use std::io;
+
+pub struct Settings {
+    pub bar_height: i32,
+    pub bg_col: Rgba<u8>,
+    pub fg_col: Rgba<u8>,
+    pub font: String,
+}
+
+impl Clone for Settings {
+    fn clone(&self) -> Settings {
+        Settings {
+            bar_height: self.bar_height,
+            bg_col: self.bg_col,
+            fg_col: self.fg_col,
+            font: self.font.clone(),
+        }
+    }
+}
+
+pub struct Element {
+    pub bg_col: Rgba<u8>,
+    pub fg_col: Rgba<u8>,
+    pub text: String,
+}
+
+impl Clone for Element {
+    fn clone(&self) -> Element {
+        Element {
+            bg_col: self.bg_col,
+            fg_col: self.fg_col,
+            text: self.text.clone(),
+        }
+    }
+}
+
+pub fn read_stdin(stdin_out: &Sender<Vec<Element>>) -> Result<(), String> {
+    loop {
+        let mut buffer = String::new();
+        if let Ok(out_length) = io::stdin().read_line(&mut buffer) {
+            if out_length > 0 {
+                stdin_out.send(parse_stdin(&buffer)).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+}
+
+pub fn get_settings() -> Settings {
+    // TODO: ARGPARSE OR SOMETHING?
+    Settings {
+        bar_height: 30,
+        bg_col: Rgba { data: [255, 0, 0, 255] },
+        fg_col: Rgba { data: [61, 61, 61, 255] },
+        font: "./src/font.ttf".to_owned(),
+    }
+}
+
+fn parse_stdin(stdin: &str) -> Vec<Element> {
+    let mut elements = Vec::new();
+
+    let mut current_bg_col = "B#00000000";
+    let mut current_fg_col = "F#00000000";
+    let mut current_text = String::new();
+
+    let mut setting_start_index = -1;
+    let mut skip_char = false;
+
+    // Iterate over each character in the string extracting settings
+    // whenever a single { is found until a single } is found
+    for (i, character) in stdin.chars().enumerate() {
+        current_text.push(character);
+
+        if skip_char {
+            skip_char = false;
+            continue;
+        } else if character == '{' && setting_start_index == -1 {
+            if stdin.len() >= (i + 2) && &stdin[i + 1..i + 2] == "{" {
+                skip_char = true;
+            } else {
+                setting_start_index = i as i32 + 1;
+            }
+        } else if character == '}' && setting_start_index != -1 {
+            if stdin.len() >= (i + 2) && &stdin[i + 1..i + 2] == "}" {
+                skip_char = true;
+            } else {
+                let setting_end_index = i as i32;
+                let setting_str = &stdin[setting_start_index as usize..setting_end_index as usize];
+
+                current_text = current_text[..current_text.len() - (setting_str.len() + 2)]
+                    .to_owned();
+                if !current_text.is_empty() {
+                    elements.push(Element {
+                        bg_col: string_to_rgba(current_bg_col),
+                        fg_col: string_to_rgba(current_fg_col),
+                        text: current_text.to_owned(),
+                    });
+                }
+
+                match get_setting_type_from_str(setting_str).as_ref() {
+                    "bg" => current_bg_col = setting_str,
+                    "fg" => current_fg_col = setting_str,
+                    _ => (),
+                };
+
+                current_text = String::new();
+                setting_start_index = -1;
+            }
+        }
+    }
+
+    if !current_text.is_empty() {
+        elements.push(Element {
+            bg_col: string_to_rgba(current_bg_col),
+            fg_col: string_to_rgba(current_fg_col),
+            text: current_text.to_owned(),
+        });
+    }
+
+    elements
+}
+
+fn get_setting_type_from_str(setting_str: &str) -> String {
+    if setting_str.starts_with('B') {
+        return "bg".to_owned();
+    } else if setting_str.starts_with('F') {
+        return "fg".to_owned();
+    }
+    String::new()
+}
+
+fn string_to_rgba(col_string: &str) -> Rgba<u8> {
+    let red_string = col_string[2..4].to_lowercase();
+    let blue_string = col_string[6..8].to_lowercase();
+    let green_string = col_string[4..6].to_lowercase();
+    let alpha_string = {
+        if col_string.len() > 8 {
+            col_string[8..10].to_lowercase()
+        } else {
+            "ff".to_owned()
+        }
+    };
+
+    let red = u8::from_str_radix(&red_string, 16).unwrap();
+    let blue = u8::from_str_radix(&blue_string, 16).unwrap();
+    let green = u8::from_str_radix(&green_string, 16).unwrap();
+    let alpha = u8::from_str_radix(&alpha_string, 16).unwrap();
+
+    Rgba { data: [red, green, blue, alpha] }
+}
+
+#[test]
+fn stdin_parser_result_correct() {
+    let stdin = "{B#ff00ff}TestString{F#00ff0000}aaa{F#ffffffff}99{F#00000000}";
+    let result = parse_stdin(stdin);
+
+    assert_eq!(result.len(), 3);
+
+    assert_eq!(result[0].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[0].fg_col, Rgba { data: [0, 0, 0, 0] });
+    assert_eq!(result[0].text, "TestString".to_owned());
+
+    assert_eq!(result[1].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[1].fg_col, Rgba { data: [0, 255, 0, 0] });
+    assert_eq!(result[1].text, "aaa".to_owned());
+
+    assert_eq!(result[2].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[2].fg_col, Rgba { data: [255, 255, 255, 255] });
+    assert_eq!(result[2].text, "99".to_owned());
+}
+
+#[test]
+fn stdin_parser_single_element() {
+    let stdin = "{B#ff00ff}{F#00ff00}TEST1TEST2TEST3TEST4TEST5TEST6";
+    let result = parse_stdin(stdin);
+
+    assert_eq!(result.len(), 1);
+
+    assert_eq!(result[0].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[0].fg_col, Rgba { data: [0, 255, 0, 255] });
+    assert_eq!(result[0].text, "TEST1TEST2TEST3TEST4TEST5TEST6".to_owned());
+}

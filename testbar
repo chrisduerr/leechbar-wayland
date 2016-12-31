@@ -1,0 +1,7 @@
+#!/bin/bash
+TEXT="{B#ff00ff}{F#00ff00}";
+
+while true; do
+    echo "$TEXT$(date)";
+    sleep .2;
+done

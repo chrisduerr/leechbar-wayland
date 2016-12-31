@@ -4,7 +4,8 @@ extern crate wayland_client;
 extern crate wayland_sys;
 extern crate byteorder;
 extern crate tempfile;
-extern crate rand;
+extern crate rusttype;
+extern crate image;
 
 use std::thread;
 use std::fs::File;
@@ -15,8 +16,10 @@ use wayland_client::protocol::{wl_compositor, wl_shell, wl_shm, wl_shell_surface
                                wl_pointer, wl_surface, wl_output, wl_display};
 
 use generated::client::desktop_shell;
+use parse_input::Settings;
 
 mod create_bar;
+mod parse_input;
 mod generated {
     #![allow(dead_code,non_camel_case_types,unused_unsafe,unused_variables)]
     #![allow(non_upper_case_globals,non_snake_case,unused_imports)]
@@ -49,7 +52,7 @@ wayland_env!(WaylandEnv,
              shm: wl_shm::WlShm);
 
 struct EventHandler {
-    event_out: Sender<(i32, i32)>,
+    event_out: Sender<i32>,
 }
 
 impl wl_shell_surface::Handler for EventHandler {
@@ -85,24 +88,39 @@ impl wl_output::Handler for EventHandler {
             _proxy: &wl_output::WlOutput,
             _flags: wl_output::Mode,
             width: i32,
-            height: i32,
+            _height: i32,
             _refresh: i32) {
-        let _ = self.event_out.send((width, height));
+        let _ = self.event_out.send(width);
     }
 }
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
 
+// TODO: Logging instead of unwrapping
+// TODO: Immortality -> Auto-Revive
 fn main() {
     let (bar_img_out, bar_img_in) = channel();
+    let (resize_out, resize_in) = channel();
+    let (stdin_out, stdin_in) = channel();
+
+    let settings = parse_input::get_settings();
+
+    {
+        let settings = settings.clone();
+        thread::spawn(move || {
+            create_bar::start_bar_creator(&settings, &bar_img_out, resize_in, stdin_in).unwrap();
+        });
+    }
+
     thread::spawn(move || {
-        create_bar::start_bar_creator(&bar_img_out);
+        parse_input::read_stdin(&stdin_out).unwrap();
     });
 
-    // TODO: Implement logging, auto-revive
-    start_wayland_panel(&bar_img_in).unwrap();
-}
+    start_wayland_panel(&settings, &bar_img_in, &resize_out).unwrap();
 
-fn start_wayland_panel(bar_img_in: &Receiver<File>) -> Result<(), String> {
+fn start_wayland_panel(settings: &Settings,
+                       bar_img_in: &Receiver<File>,
+                       resize_out: &Sender<i32>)
+                       -> Result<(), String> {
     let (display, mut event_queue) = match wayland_client::default_connect() {
         Ok(ret) => ret,
         Err(e) => return Err(format!("Cannot connect to wayland server: {:?}", e)),
@@ -148,12 +166,12 @@ fn start_wayland_panel(bar_img_in: &Receiver<File>) -> Result<(), String> {
     event_queue.register::<_, EventHandler>(&shell_surface, 1);
     event_queue.register::<_, EventHandler>(&output, 1);
 
-    let (mut width, mut height) = (0, 0);
+    let mut output_width = 0;
     loop {
         match event_in.try_recv() {
-            Ok((w, h)) => {
-                width = w;
-                height = h;
+            Ok(w) => {
+                output_width = w;
+                resize_out.send(output_width).map_err(|e| e.to_string())?;
             }
             Err(TryRecvError::Empty) => (),
             Err(_) => return Err("Output resize channel disconnected".to_owned()),
@@ -161,13 +179,53 @@ fn start_wayland_panel(bar_img_in: &Receiver<File>) -> Result<(), String> {
 
         {
             match bar_img_in.try_recv() {
-                Ok(bar_img) => draw_bar(&bar_img, &mut event_queue, &surface, &display)?,
-                Err(TryRecvError::Empty) => (), // TODO: Handle possible errors and retry?
+                Ok(bar_img) => {
+                    draw_bar(&bar_img,
+                             &mut event_queue,
+                             &surface,
+                             &display,
+                             output_width,
+                             settings.bar_height)?
+                }
+                Err(TryRecvError::Empty) => (),
                 Err(_) => return Err("Bar creation channel disconnected.".to_owned()),
             };
         }
         event_queue.sync_roundtrip().map_err(|e| e.to_string())?;
     }
+}
+
+fn draw_bar(bar_img: &File,
+            event_queue: &mut EventQueue,
+            surface: &wl_surface::WlSurface,
+            display: &wl_display::WlDisplay,
+            bar_width: i32,
+            bar_height: i32)
+            -> Result<(), String> {
+    let state = event_queue.state();
+    let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
+
+    let pool = match env.shm.create_pool(bar_img.as_raw_fd(), bar_height * bar_width * 4) {
+        RequestResult::Sent(pool) => pool,
+        RequestResult::Destroyed => return Err("SHM already destroyed.".to_owned()),
+    };
+
+    let buffer = match pool.create_buffer(0,
+                                          bar_width,
+                                          bar_height,
+                                          bar_width * 4,
+                                          wl_shm::Format::Argb8888) {
+        RequestResult::Sent(pool) => pool,
+        RequestResult::Destroyed => return Err("Pool already destroyed.".to_owned()),
+    };
+
+    surface.attach(Some(&buffer), 0, 0);
+    surface.commit();
+
+    // Ignore if writing to display failed to try again next time
+    let _ = display.flush();
+
+    Ok(())
 }
 
 fn request_result_to_result<T>(request_result: RequestResult<T>,
@@ -177,25 +235,4 @@ fn request_result_to_result<T>(request_result: RequestResult<T>,
         RequestResult::Sent(result) => Ok(result),
         RequestResult::Destroyed => Err(error_msg.to_owned()),
     }
-}
-
-fn draw_bar(bar_img: &File,
-            event_queue: &mut EventQueue,
-            surface: &wl_surface::WlSurface,
-            display: &wl_display::WlDisplay)
-            -> Result<(), String> {
-    let state = event_queue.state();
-    let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
-    let pool = match env.shm.create_pool(bar_img.as_raw_fd(), 80_000) {
-        RequestResult::Sent(pool) => pool,
-        RequestResult::Destroyed => return Err("SHM already destroyed.".to_owned()),
-    };
-    let buffer = match pool.create_buffer(0, 1000, 20, 4000, wl_shm::Format::Argb8888) {
-        RequestResult::Sent(pool) => pool,
-        RequestResult::Destroyed => return Err("Pool already destroyed.".to_owned()),
-    };
-    surface.attach(Some(&buffer), 0, 0);
-    surface.commit();
-    let _ = display.flush(); // Ignore if writing to display failed to try again next time
-    Ok(())
 }
