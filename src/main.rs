@@ -116,6 +116,7 @@ fn main() {
     });
 
     start_wayland_panel(&settings, &bar_img_in, &resize_out).unwrap();
+}
 
 fn start_wayland_panel(settings: &Settings,
                        bar_img_in: &Receiver<File>,
@@ -191,6 +192,8 @@ fn start_wayland_panel(settings: &Settings,
                 Err(_) => return Err("Bar creation channel disconnected.".to_owned()),
             };
         }
+
+        // TODO: Fix SHM buffer error when resizing sometimeh
         event_queue.sync_roundtrip().map_err(|e| e.to_string())?;
     }
 }

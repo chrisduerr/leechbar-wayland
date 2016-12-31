@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{self, Write, Read};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
-use image::{GenericImage, Pixel, Rgba, DynamicImage};
+use image::{GenericImage, Pixel, Rgba, DynamicImage, FilterType};
 use rusttype::{FontCollection, Scale, PositionedGlyph, point};
 
 use parse_input::{Settings, Element};
@@ -21,15 +21,10 @@ pub fn start_bar_creator(settings: &Settings,
     {
         let combined_out = combined_out.clone();
         thread::spawn(move || {
-            loop {
-                match resize_in.recv() {
-                    Ok(output_width) => {
-                        if let Err(_) = combined_out.send((Some(output_width), None)) {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                };
+            while let Ok(output_width) = resize_in.recv() {
+                if combined_out.send((Some(output_width), None)).is_err() {
+                    break;
+                }
             }
         });
     }
@@ -37,15 +32,10 @@ pub fn start_bar_creator(settings: &Settings,
     {
         let combined_out = combined_out.clone();
         thread::spawn(move || {
-            loop {
-                match stdin_in.recv() {
-                    Ok(elements) => {
-                        if let Err(_) = combined_out.send((None, Some(elements))) {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                };
+            while let Ok(elements) = stdin_in.recv() {
+                if combined_out.send((None, Some(elements))).is_err() {
+                    break;
+                }
             }
         });
     }
@@ -59,11 +49,11 @@ pub fn start_bar_creator(settings: &Settings,
                     bar_elements = elements;
                 }
 
-                if output_width > 0 && bar_elements.len() > 0 {
+                if output_width > 0 && !bar_elements.is_empty() {
                     let bar_img = create_bar_from_elements(&bar_elements,
                                                            output_width as u32,
                                                            settings.bar_height as u32,
-                                                           settings.bg_col,
+                                                           &settings.bg_col,
                                                            &settings.font);
                     bar_img_out.send(img_to_file(bar_img).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?;
@@ -74,19 +64,13 @@ pub fn start_bar_creator(settings: &Settings,
     }
 }
 
-fn create_bar_from_elements(elements: &Vec<Element>,
+fn create_bar_from_elements(elements: &[Element],
                             bar_width: u32,
                             bar_height: u32,
-                            bg_col: Rgba<u8>,
+                            bg_col: &DynamicImage,
                             font: &str)
                             -> DynamicImage {
-    let mut bar_img = DynamicImage::new_rgba8(bar_width, bar_height);
-
-    for x in 0..bar_width {
-        for y in 0..bar_height {
-            bar_img.put_pixel(x, y, bg_col);
-        }
-    }
+    let mut bar_img = bg_col.clone().resize_exact(bar_width, bar_height, FilterType::Lanczos3);
 
     let mut rendered_elements = Vec::new();
     for element in elements {
@@ -106,7 +90,7 @@ fn create_bar_from_elements(elements: &Vec<Element>,
             }
 
             for y in 0..ele_height {
-                let mut element_pixel = bg_col;
+                let mut element_pixel = bar_img.get_pixel(x + x_offset, y);
                 element_pixel.blend(&element.get_pixel(x, y));
                 bar_img.put_pixel(x + x_offset, y, element_pixel);
             }
@@ -134,7 +118,7 @@ fn img_to_file(img: DynamicImage) -> Result<File, io::Error> {
 
 fn render_block(text: &str,
                 fg_col: &Rgba<u8>,
-                bg_col: &Rgba<u8>,
+                bg_col: &DynamicImage,
                 height: f32,
                 font_path: &str)
                 -> DynamicImage {
@@ -166,14 +150,7 @@ fn render_block(text: &str,
         .unwrap_or(0.0)
         .ceil() as usize;
 
-    let mut image = DynamicImage::new_rgba8(width as u32, height as u32);
-
-    // Fill background color
-    for x in 0..width as u32 {
-        for y in 0..height as u32 {
-            image.put_pixel(x, y, *bg_col);
-        }
-    }
+    let mut image = bg_col.clone().resize_exact(width as u32, height as u32, FilterType::Lanczos3);
 
     // Render glyphs on top of background
     for glyph in glyphs {

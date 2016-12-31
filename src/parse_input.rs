@@ -1,10 +1,11 @@
+use std::{io, env};
+use std::path::Path;
 use std::sync::mpsc::Sender;
-use image::Rgba;
-use std::io;
+use image::{self, Rgba, DynamicImage, GenericImage};
 
 pub struct Settings {
     pub bar_height: i32,
-    pub bg_col: Rgba<u8>,
+    pub bg_col: DynamicImage,
     pub fg_col: Rgba<u8>,
     pub font: String,
 }
@@ -13,7 +14,7 @@ impl Clone for Settings {
     fn clone(&self) -> Settings {
         Settings {
             bar_height: self.bar_height,
-            bg_col: self.bg_col,
+            bg_col: self.bg_col.clone(),
             fg_col: self.fg_col,
             font: self.font.clone(),
         }
@@ -21,7 +22,7 @@ impl Clone for Settings {
 }
 
 pub struct Element {
-    pub bg_col: Rgba<u8>,
+    pub bg_col: DynamicImage,
     pub fg_col: Rgba<u8>,
     pub text: String,
 }
@@ -29,7 +30,7 @@ pub struct Element {
 impl Clone for Element {
     fn clone(&self) -> Element {
         Element {
-            bg_col: self.bg_col,
+            bg_col: self.bg_col.clone(),
             fg_col: self.fg_col,
             text: self.text.clone(),
         }
@@ -49,9 +50,11 @@ pub fn read_stdin(stdin_out: &Sender<Vec<Element>>) -> Result<(), String> {
 
 pub fn get_settings() -> Settings {
     // TODO: ARGPARSE OR SOMETHING?
+    let mut bg_col = DynamicImage::new_rgba8(1, 1);
+    bg_col.put_pixel(0, 0, Rgba { data: [255, 0, 0, 255] });
     Settings {
         bar_height: 30,
-        bg_col: Rgba { data: [255, 0, 0, 255] },
+        bg_col: bg_col,
         fg_col: Rgba { data: [61, 61, 61, 255] },
         font: "./src/font.ttf".to_owned(),
     }
@@ -60,8 +63,8 @@ pub fn get_settings() -> Settings {
 fn parse_stdin(stdin: &str) -> Vec<Element> {
     let mut elements = Vec::new();
 
-    let mut current_bg_col = "B#00000000";
-    let mut current_fg_col = "F#00000000";
+    let mut current_bg_col = DynamicImage::new_rgba8(1, 1);
+    let mut current_fg_col = Rgba { data: [0, 0, 0, 0] };
     let mut current_text = String::new();
 
     let mut setting_start_index = -1;
@@ -92,15 +95,26 @@ fn parse_stdin(stdin: &str) -> Vec<Element> {
                     .to_owned();
                 if !current_text.is_empty() {
                     elements.push(Element {
-                        bg_col: string_to_rgba(current_bg_col),
-                        fg_col: string_to_rgba(current_fg_col),
+                        bg_col: current_bg_col.clone(),
+                        fg_col: current_fg_col,
                         text: current_text.to_owned(),
                     });
                 }
 
-                match get_setting_type_from_str(setting_str).as_ref() {
-                    "bg" => current_bg_col = setting_str,
-                    "fg" => current_fg_col = setting_str,
+                match setting_str[0..1].to_lowercase().as_ref() {
+                    "b" => {
+                        if &setting_str[1..2] == "#" {
+                            current_bg_col.put_pixel(0, 0, string_to_rgba(setting_str));
+                        } else {
+                            let home_dir = env::home_dir().unwrap();
+                            let home_str = home_dir.to_string_lossy();
+                            let path = setting_str[1..]
+                                .replace('~', &home_str)
+                                .replace("$HOME", &home_str);
+                            current_bg_col = image::open(&Path::new(&path)).unwrap();
+                        }
+                    }
+                    "f" => current_fg_col = string_to_rgba(setting_str),
                     _ => (),
                 };
 
@@ -112,22 +126,13 @@ fn parse_stdin(stdin: &str) -> Vec<Element> {
 
     if !current_text.is_empty() {
         elements.push(Element {
-            bg_col: string_to_rgba(current_bg_col),
-            fg_col: string_to_rgba(current_fg_col),
+            bg_col: current_bg_col,
+            fg_col: current_fg_col,
             text: current_text.to_owned(),
         });
     }
 
     elements
-}
-
-fn get_setting_type_from_str(setting_str: &str) -> String {
-    if setting_str.starts_with('B') {
-        return "bg".to_owned();
-    } else if setting_str.starts_with('F') {
-        return "fg".to_owned();
-    }
-    String::new()
 }
 
 fn string_to_rgba(col_string: &str) -> Rgba<u8> {
