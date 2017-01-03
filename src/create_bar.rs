@@ -12,7 +12,7 @@ use parse_input::Settings;
 
 pub struct Element {
     pub bg_col: DynamicImage,
-    pub fg_col: DynamicImage,
+    pub fg_col: Rgba<u8>,
     pub text: String,
 }
 
