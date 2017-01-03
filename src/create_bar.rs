@@ -1,19 +1,36 @@
 use tempfile;
 use std::thread;
 use std::fs::File;
+use std::error::Error;
 use std::io::{self, Write, Read};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use image::{GenericImage, Pixel, Rgba, DynamicImage, FilterType};
 use rusttype::{FontCollection, Scale, PositionedGlyph, point};
 
-use parse_input::{Settings, Element};
+use parse_input::Settings;
+
+pub struct Element {
+    pub bg_col: DynamicImage,
+    pub fg_col: DynamicImage,
+    pub text: String,
+}
+
+impl Clone for Element {
+    fn clone(&self) -> Element {
+        Element {
+            bg_col: self.bg_col.clone(),
+            fg_col: self.fg_col,
+            text: self.text.clone(),
+        }
+    }
+}
 
 pub fn start_bar_creator(settings: &Settings,
                          bar_img_out: &Sender<File>,
                          resize_in: Receiver<i32>,
                          stdin_in: Receiver<Vec<Element>>)
-                         -> Result<(), String> {
+                         -> Result<(), Box<Error>> {
     let mut output_width = 0;
     let mut bar_elements = Vec::new();
     let (combined_out, combined_in) = channel();
@@ -54,12 +71,11 @@ pub fn start_bar_creator(settings: &Settings,
                                                            output_width as u32,
                                                            settings.bar_height as u32,
                                                            &settings.bg_col,
-                                                           &settings.font);
-                    bar_img_out.send(img_to_file(bar_img).map_err(|e| e.to_string())?)
-                        .map_err(|e| e.to_string())?;
+                                                           &settings.font)?;
+                    bar_img_out.send(img_to_file(bar_img)?)?;
                 }
             }
-            Err(_) => return Err("Stdin or Resize channel disconnected.".to_owned()),
+            Err(_) => Err("Stdin or Resize channel disconnected.".to_owned())?,
         };
     }
 }
@@ -69,7 +85,7 @@ fn create_bar_from_elements(elements: &[Element],
                             bar_height: u32,
                             bg_col: &DynamicImage,
                             font: &str)
-                            -> DynamicImage {
+                            -> Result<DynamicImage, Box<Error>> {
     let mut bar_img = bg_col.clone().resize_exact(bar_width, bar_height, FilterType::Lanczos3);
 
     let mut rendered_elements = Vec::new();
@@ -78,7 +94,7 @@ fn create_bar_from_elements(elements: &[Element],
                                             &element.fg_col,
                                             &element.bg_col,
                                             bar_height as f32,
-                                            font));
+                                            font)?);
     }
 
     let mut x_offset = 0;
@@ -97,7 +113,8 @@ fn create_bar_from_elements(elements: &[Element],
         }
         x_offset += ele_width;
     }
-    bar_img
+
+    Ok(bar_img)
 }
 
 fn img_to_file(img: DynamicImage) -> Result<File, io::Error> {
@@ -121,12 +138,13 @@ fn render_block(text: &str,
                 bg_col: &DynamicImage,
                 height: f32,
                 font_path: &str)
-                -> DynamicImage {
+                -> Result<DynamicImage, Box<Error>> {
     let text = text.replace('\n', "").replace('\r', "").replace('\t', "");
 
-    let font_data: Vec<u8> = File::open(font_path).unwrap().bytes().map(|b| b.unwrap()).collect();
+    let font_file = File::open(font_path)?;
+    let font_data = font_file.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
     let collection = FontCollection::from_bytes(font_data);
-    let font = collection.into_font().unwrap();
+    let font = collection.into_font().ok_or("Invalid font type.".to_owned())?;
 
     let scale = Scale {
         x: height,
@@ -167,15 +185,18 @@ fn render_block(text: &str,
         }
     }
 
-    image
+    Ok(image)
 }
 
 #[test]
 fn render_block_prevent_escape_sequences() {
+    let mut bg = DynamicImage::new_rgba8(1, 1);
+    bg.put_pixel(0, 0, Rgba { data: [255, 0, 255, 255] });
     let result = render_block("TEXT\t\n\rx",
                               &Rgba { data: [255, 0, 255, 255] },
-                              &Rgba { data: [255, 0, 255, 255] },
+                              &bg,
                               30.0,
-                              "./src/font.ttf");
+                              "./src/font.ttf")
+        .unwrap();
     assert_eq!(result.get_pixel(0, 0), Rgba { data: [255, 0, 255, 255] });
 }

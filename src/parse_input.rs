@@ -1,7 +1,11 @@
 use std::{io, env};
+use std::error::Error;
 use std::path::Path;
+use std::num::ParseIntError;
 use std::sync::mpsc::Sender;
 use image::{self, Rgba, DynamicImage, GenericImage};
+
+use create_bar::Element;
 
 pub struct Settings {
     pub bar_height: i32,
@@ -21,28 +25,12 @@ impl Clone for Settings {
     }
 }
 
-pub struct Element {
-    pub bg_col: DynamicImage,
-    pub fg_col: Rgba<u8>,
-    pub text: String,
-}
-
-impl Clone for Element {
-    fn clone(&self) -> Element {
-        Element {
-            bg_col: self.bg_col.clone(),
-            fg_col: self.fg_col,
-            text: self.text.clone(),
-        }
-    }
-}
-
-pub fn read_stdin(stdin_out: &Sender<Vec<Element>>) -> Result<(), String> {
+pub fn read_stdin(stdin_out: &Sender<Vec<Element>>) -> Result<(), Box<Error>> {
     loop {
         let mut buffer = String::new();
         if let Ok(out_length) = io::stdin().read_line(&mut buffer) {
             if out_length > 0 {
-                stdin_out.send(parse_stdin(&buffer)).map_err(|e| e.to_string())?;
+                stdin_out.send(parse_stdin(&buffer)?)?;
             }
         }
     }
@@ -60,7 +48,7 @@ pub fn get_settings() -> Settings {
     }
 }
 
-fn parse_stdin(stdin: &str) -> Vec<Element> {
+fn parse_stdin(stdin: &str) -> Result<Vec<Element>, Box<Error>> {
     let mut elements = Vec::new();
 
     let mut current_bg_col = DynamicImage::new_rgba8(1, 1);
@@ -104,17 +92,18 @@ fn parse_stdin(stdin: &str) -> Vec<Element> {
                 match setting_str[0..1].to_lowercase().as_ref() {
                     "b" => {
                         if &setting_str[1..2] == "#" {
-                            current_bg_col.put_pixel(0, 0, string_to_rgba(setting_str));
+                            current_bg_col.put_pixel(0, 0, string_to_rgba(setting_str)?);
                         } else {
-                            let home_dir = env::home_dir().unwrap();
+                            let home_dir =
+                                env::home_dir().ok_or("Could not find home dir.".to_owned())?;
                             let home_str = home_dir.to_string_lossy();
                             let path = setting_str[1..]
                                 .replace('~', &home_str)
                                 .replace("$HOME", &home_str);
-                            current_bg_col = image::open(&Path::new(&path)).unwrap();
+                            current_bg_col = image::open(&Path::new(&path))?;
                         }
                     }
-                    "f" => current_fg_col = string_to_rgba(setting_str),
+                    "f" => current_fg_col = string_to_rgba(setting_str)?,
                     _ => (),
                 };
 
@@ -132,10 +121,10 @@ fn parse_stdin(stdin: &str) -> Vec<Element> {
         });
     }
 
-    elements
+    Ok(elements)
 }
 
-fn string_to_rgba(col_string: &str) -> Rgba<u8> {
+fn string_to_rgba(col_string: &str) -> Result<Rgba<u8>, ParseIntError> {
     let red_string = col_string[2..4].to_lowercase();
     let blue_string = col_string[6..8].to_lowercase();
     let green_string = col_string[4..6].to_lowercase();
@@ -147,30 +136,33 @@ fn string_to_rgba(col_string: &str) -> Rgba<u8> {
         }
     };
 
-    let red = u8::from_str_radix(&red_string, 16).unwrap();
-    let blue = u8::from_str_radix(&blue_string, 16).unwrap();
-    let green = u8::from_str_radix(&green_string, 16).unwrap();
-    let alpha = u8::from_str_radix(&alpha_string, 16).unwrap();
+    let red = u8::from_str_radix(&red_string, 16)?;
+    let blue = u8::from_str_radix(&blue_string, 16)?;
+    let green = u8::from_str_radix(&green_string, 16)?;
+    let alpha = u8::from_str_radix(&alpha_string, 16)?;
 
-    Rgba { data: [red, green, blue, alpha] }
+    Ok(Rgba { data: [red, green, blue, alpha] })
 }
 
 #[test]
 fn stdin_parser_result_correct() {
     let stdin = "{B#ff00ff}TestString{F#00ff0000}aaa{F#ffffffff}99{F#00000000}";
-    let result = parse_stdin(stdin);
+    let result = parse_stdin(stdin).unwrap();
 
     assert_eq!(result.len(), 3);
 
-    assert_eq!(result[0].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[0].bg_col.get_pixel(0, 0),
+               Rgba { data: [255, 0, 255, 255] });
     assert_eq!(result[0].fg_col, Rgba { data: [0, 0, 0, 0] });
     assert_eq!(result[0].text, "TestString".to_owned());
 
-    assert_eq!(result[1].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[1].bg_col.get_pixel(0, 0),
+               Rgba { data: [255, 0, 255, 255] });
     assert_eq!(result[1].fg_col, Rgba { data: [0, 255, 0, 0] });
     assert_eq!(result[1].text, "aaa".to_owned());
 
-    assert_eq!(result[2].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[2].bg_col.get_pixel(0, 0),
+               Rgba { data: [255, 0, 255, 255] });
     assert_eq!(result[2].fg_col, Rgba { data: [255, 255, 255, 255] });
     assert_eq!(result[2].text, "99".to_owned());
 }
@@ -178,11 +170,12 @@ fn stdin_parser_result_correct() {
 #[test]
 fn stdin_parser_single_element() {
     let stdin = "{B#ff00ff}{F#00ff00}TEST1TEST2TEST3TEST4TEST5TEST6";
-    let result = parse_stdin(stdin);
+    let result = parse_stdin(stdin).unwrap();
 
     assert_eq!(result.len(), 1);
 
-    assert_eq!(result[0].bg_col, Rgba { data: [255, 0, 255, 255] });
+    assert_eq!(result[0].bg_col.get_pixel(0, 0),
+               Rgba { data: [255, 0, 255, 255] });
     assert_eq!(result[0].fg_col, Rgba { data: [0, 255, 0, 255] });
     assert_eq!(result[0].text, "TEST1TEST2TEST3TEST4TEST5TEST6".to_owned());
 }
