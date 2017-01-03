@@ -1,7 +1,7 @@
 use tempfile;
-use std::thread;
 use std::fs::File;
 use std::error::Error;
+use std::{thread, cmp};
 use std::io::{self, Write, Read};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
@@ -12,7 +12,7 @@ use parse_input::Settings;
 
 pub struct Element {
     pub bg_col: DynamicImage,
-    pub fg_col: Rgba<u8>,
+    pub fg_col: DynamicImage,
     pub text: String,
 }
 
@@ -20,13 +20,13 @@ impl Clone for Element {
     fn clone(&self) -> Element {
         Element {
             bg_col: self.bg_col.clone(),
-            fg_col: self.fg_col,
+            fg_col: self.fg_col.clone(),
             text: self.text.clone(),
         }
     }
 }
 
-pub fn start_bar_creator(settings: &Settings,
+pub fn start_bar_creator(settings: Settings,
                          bar_img_out: &Sender<File>,
                          resize_in: Receiver<i32>,
                          stdin_in: Receiver<Vec<Element>>)
@@ -86,7 +86,7 @@ fn create_bar_from_elements(elements: &[Element],
                             bg_col: &DynamicImage,
                             font: &str)
                             -> Result<DynamicImage, Box<Error>> {
-    let mut bar_img = bg_col.clone().resize_exact(bar_width, bar_height, FilterType::Lanczos3);
+    let mut bar_img = bg_col.resize_exact(bar_width, bar_height, FilterType::Triangle);
 
     let mut rendered_elements = Vec::new();
     for element in elements {
@@ -134,11 +134,36 @@ fn img_to_file(img: DynamicImage) -> Result<File, io::Error> {
 }
 
 fn render_block(text: &str,
-                fg_col: &Rgba<u8>,
+                fg_col: &DynamicImage,
                 bg_col: &DynamicImage,
                 height: f32,
                 font_path: &str)
                 -> Result<DynamicImage, Box<Error>> {
+    match fg_col.width() {
+        1 => Ok(render_text(text, &fg_col.get_pixel(0, 0), bg_col, height, font_path)?),
+        _ => Ok(render_img(fg_col, bg_col, height as u32)),
+    }
+}
+
+fn render_img(fg_col: &DynamicImage, bg_col: &DynamicImage, height: u32) -> DynamicImage {
+    let mut image = bg_col.resize_exact(fg_col.width(), height, FilterType::Nearest);
+    for x in 0..fg_col.width() {
+        for y in 0..cmp::min(fg_col.height(), height) {
+            let mut current_pixel = image.get_pixel(x, y);
+            current_pixel.blend(&fg_col.get_pixel(x, y));
+            image.put_pixel(x, y, current_pixel);
+        }
+    }
+
+    image
+}
+
+fn render_text(text: &str,
+               fg_col: &Rgba<u8>,
+               bg_col: &DynamicImage,
+               height: f32,
+               font_path: &str)
+               -> Result<DynamicImage, Box<Error>> {
     let text = text.replace('\n', "").replace('\r', "").replace('\t', "");
 
     let font_file = File::open(font_path)?;
@@ -168,7 +193,7 @@ fn render_block(text: &str,
         .unwrap_or(0.0)
         .ceil() as usize;
 
-    let mut image = bg_col.clone().resize_exact(width as u32, height as u32, FilterType::Lanczos3);
+    let mut image = bg_col.resize_exact(width as u32, height as u32, FilterType::Nearest);
 
     // Render glyphs on top of background
     for glyph in glyphs {
@@ -190,13 +215,8 @@ fn render_block(text: &str,
 
 #[test]
 fn render_block_prevent_escape_sequences() {
-    let mut bg = DynamicImage::new_rgba8(1, 1);
-    bg.put_pixel(0, 0, Rgba { data: [255, 0, 255, 255] });
-    let result = render_block("TEXT\t\n\rx",
-                              &Rgba { data: [255, 0, 255, 255] },
-                              &bg,
-                              30.0,
-                              "./src/font.ttf")
-        .unwrap();
+    let mut col = DynamicImage::new_rgba8(1, 1);
+    col.put_pixel(0, 0, Rgba { data: [255, 0, 255, 255] });
+    let result = render_block("TEXT\t\n\rx", &col, &col, 30.0, "./src/font.ttf").unwrap();
     assert_eq!(result.get_pixel(0, 0), Rgba { data: [255, 0, 255, 255] });
 }

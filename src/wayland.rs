@@ -103,7 +103,7 @@ pub fn start_wayland_panel(settings: &Settings,
         let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
 
         let surface = request_result_to_result(env.compositor.create_surface(),
-                                               "Compositor already destroyed,")?;
+                                               "Compositor already destroyed.")?;
         let shell_surface = request_result_to_result(env.shell.get_shell_surface(&surface),
                                                      "Surface already destroyed.")?;
         let pointer = request_result_to_result(env.seat.get_pointer(), "Seat already destroyed.")?;
@@ -118,7 +118,7 @@ pub fn start_wayland_panel(settings: &Settings,
             if interface == "wl_output" {
                 output = Some(request_result_to_result(registry.bind::<wl_output::WlOutput>(version,
                                                                                         name),
-                                                       "Unabled to find WlOutput in globals")?);
+                                                       "Unabled to find WlOutput in globals.")?);
             }
         }
         let output = output.ok_or("Unable to find WlOutput in globals.".to_owned())?;

@@ -6,6 +6,7 @@ extern crate byteorder;
 extern crate tempfile;
 extern crate rusttype;
 extern crate image;
+extern crate regex;
 
 use std::thread;
 use std::sync::mpsc::channel;
@@ -26,13 +27,16 @@ fn main() {
     {
         let settings = settings.clone();
         thread::spawn(move || {
-            create_bar::start_bar_creator(&settings, &bar_img_out, resize_in, stdin_in).unwrap();
+            create_bar::start_bar_creator(settings, &bar_img_out, resize_in, stdin_in).unwrap();
         });
     }
 
-    thread::spawn(move || {
-        parse_input::read_stdin(&stdin_out).unwrap();
-    });
+    {
+        let settings = settings.clone();
+        thread::spawn(move || {
+            parse_input::read_stdin(settings, &stdin_out).unwrap();
+        });
+    }
 
     wayland::start_wayland_panel(&settings, &bar_img_in, &resize_out).unwrap();
 }

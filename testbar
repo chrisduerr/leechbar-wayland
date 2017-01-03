@@ -1,7 +1,0 @@
-#!/bin/bash
-TEXT="{B~/Pictures/tmp.png}{F#00ff00}";
-
-while true; do
-    echo "$TEXT$(date)";
-    sleep .2;
-done
