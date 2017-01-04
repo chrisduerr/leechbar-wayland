@@ -2,34 +2,157 @@ use tempfile;
 use std::fs::File;
 use std::error::Error;
 use std::{thread, cmp};
-use std::io::{self, Write, Read};
+use std::io::{self, Write};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use image::{GenericImage, Pixel, Rgba, DynamicImage, FilterType};
-use rusttype::{FontCollection, Scale, PositionedGlyph, point};
+use rusttype::{Scale, PositionedGlyph, point, Font};
 
 use parse_input::Settings;
 
-pub struct Element {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Alignment {
+    LEFT,
+    CENTER,
+    RIGHT,
+}
+
+pub trait Blockable: Send + 'static {
+    fn render(&self, height: u32, font: &Font) -> Result<DynamicImage, Box<Error>>;
+    fn alignment(&self) -> Alignment;
+    #[cfg(test)]
+    fn as_textelement(&self) -> TextElement;
+}
+
+pub struct TextElement {
+    pub alignment: Alignment,
     pub bg_col: DynamicImage,
-    pub fg_col: DynamicImage,
+    pub fg_col: Rgba<u8>,
     pub text: String,
 }
 
-impl Clone for Element {
-    fn clone(&self) -> Element {
-        Element {
+impl Clone for TextElement {
+    fn clone(&self) -> TextElement {
+        TextElement {
+            alignment: self.alignment,
             bg_col: self.bg_col.clone(),
-            fg_col: self.fg_col.clone(),
+            fg_col: self.fg_col,
             text: self.text.clone(),
         }
+    }
+}
+
+impl Blockable for TextElement {
+    fn render(&self, height: u32, font: &Font) -> Result<DynamicImage, Box<Error>> {
+        let text = self.text.replace('\n', "").replace('\r', "").replace('\t', "");
+
+        let scale = Scale {
+            x: height as f32,
+            y: height as f32,
+        };
+
+        let v_metrics = font.v_metrics(scale);
+        let offset = point(0.0, v_metrics.ascent);
+
+        let glyphs: Vec<PositionedGlyph> = font.layout(&text, scale, offset)
+            .collect();
+
+        // Find the most visually pleasing width to display -> No idea what's going on exactly
+        let width = glyphs.iter()
+            .rev()
+            .filter_map(|g| {
+                g.pixel_bounding_box()
+                    .map(|b| b.min.x as f32 + g.unpositioned().h_metrics().advance_width)
+            })
+            .next()
+            .unwrap_or(0.0)
+            .ceil() as usize;
+
+        let mut image = DynamicImage::new_rgba8(width as u32, height);
+        for x in 0..cmp::min(self.bg_col.width(), width as u32) {
+            for y in 0..cmp::min(self.bg_col.height(), height) {
+                image.put_pixel(x, y, self.bg_col.get_pixel(x, y));
+            }
+        }
+
+        // Render glyphs on top of background
+        for glyph in glyphs {
+            if let Some(bb) = glyph.pixel_bounding_box() {
+                glyph.draw(|x, y, v| {
+                    let x = x + bb.min.x as u32;
+                    let y = y + bb.min.y as u32;
+                    let mut current_pixel = image.get_pixel(x, y);
+                    let mut pixel_col = self.fg_col;
+                    pixel_col.data[3] = (v * 255.0) as u8;
+                    current_pixel.blend(&pixel_col);
+                    image.put_pixel(x, y, current_pixel);
+                });
+            }
+        }
+
+        Ok(image)
+    }
+
+    fn alignment(&self) -> Alignment {
+        self.alignment
+    }
+
+    #[cfg(test)]
+    fn as_textelement(&self) -> TextElement {
+        self.clone()
+    }
+}
+
+pub struct ImageElement {
+    pub alignment: Alignment,
+    pub bg_col: DynamicImage,
+    pub fg_col: DynamicImage,
+}
+
+impl Clone for ImageElement {
+    fn clone(&self) -> ImageElement {
+        ImageElement {
+            alignment: self.alignment,
+            bg_col: self.bg_col.clone(),
+            fg_col: self.fg_col.clone(),
+        }
+    }
+}
+
+impl Blockable for ImageElement {
+    fn render(&self, height: u32, _font: &Font) -> Result<DynamicImage, Box<Error>> {
+        let mut image = DynamicImage::new_rgba8(self.fg_col.width(), height);
+        for x in 0..cmp::min(self.bg_col.width(), self.fg_col.width()) {
+            for y in 0..cmp::min(self.bg_col.height(), height) {
+                image.put_pixel(x, y, self.bg_col.get_pixel(x, y));
+            }
+        }
+
+        for x in 0..self.fg_col.width() {
+            for y in 0..cmp::min(self.fg_col.height(), height) {
+                let mut current_pixel = image.get_pixel(x, y);
+                current_pixel.blend(&self.fg_col.get_pixel(x, y));
+                image.put_pixel(x, y, current_pixel);
+            }
+        }
+
+        Ok(image)
+    }
+
+    fn alignment(&self) -> Alignment {
+        self.alignment
+    }
+
+    #[cfg(test)]
+    fn as_textelement(&self) -> TextElement {
+        panic!("This is not a TextElement.");
     }
 }
 
 pub fn start_bar_creator(settings: Settings,
                          bar_img_out: &Sender<File>,
                          resize_in: Receiver<i32>,
-                         stdin_in: Receiver<Vec<Element>>)
+                         stdin_in: Receiver<Vec<Box<Blockable>>>)
                          -> Result<(), Box<Error>> {
     let mut output_width = 0;
     let mut bar_elements = Vec::new();
@@ -80,21 +203,17 @@ pub fn start_bar_creator(settings: Settings,
     }
 }
 
-fn create_bar_from_elements(elements: &[Element],
+fn create_bar_from_elements(elements: &[Box<Blockable>],
                             bar_width: u32,
                             bar_height: u32,
                             bg_col: &DynamicImage,
-                            font: &str)
+                            font: &Font)
                             -> Result<DynamicImage, Box<Error>> {
     let mut bar_img = bg_col.resize_exact(bar_width, bar_height, FilterType::Triangle);
 
     let mut rendered_elements = Vec::new();
     for element in elements {
-        rendered_elements.push(render_block(&element.text,
-                                            &element.fg_col,
-                                            &element.bg_col,
-                                            bar_height as f32,
-                                            font)?);
+        rendered_elements.push(element.render(bar_height, font)?);
     }
 
     let mut x_offset = 0;
@@ -133,90 +252,19 @@ fn img_to_file(img: DynamicImage) -> Result<File, io::Error> {
     Ok(tmp)
 }
 
-fn render_block(text: &str,
-                fg_col: &DynamicImage,
-                bg_col: &DynamicImage,
-                height: f32,
-                font_path: &str)
-                -> Result<DynamicImage, Box<Error>> {
-    match fg_col.width() {
-        1 => Ok(render_text(text, &fg_col.get_pixel(0, 0), bg_col, height, font_path)?),
-        _ => Ok(render_img(fg_col, bg_col, height as u32)),
-    }
-}
-
-fn render_img(fg_col: &DynamicImage, bg_col: &DynamicImage, height: u32) -> DynamicImage {
-    let mut image = bg_col.resize_exact(fg_col.width(), height, FilterType::Nearest);
-    for x in 0..fg_col.width() {
-        for y in 0..cmp::min(fg_col.height(), height) {
-            let mut current_pixel = image.get_pixel(x, y);
-            current_pixel.blend(&fg_col.get_pixel(x, y));
-            image.put_pixel(x, y, current_pixel);
-        }
-    }
-
-    image
-}
-
-fn render_text(text: &str,
-               fg_col: &Rgba<u8>,
-               bg_col: &DynamicImage,
-               height: f32,
-               font_path: &str)
-               -> Result<DynamicImage, Box<Error>> {
-    let text = text.replace('\n', "").replace('\r', "").replace('\t', "");
-
-    let font_file = File::open(font_path)?;
-    let font_data = font_file.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
-    let collection = FontCollection::from_bytes(font_data);
-    let font = collection.into_font().ok_or("Invalid font type.".to_owned())?;
-
-    let scale = Scale {
-        x: height,
-        y: height,
-    };
-
-    let v_metrics = font.v_metrics(scale);
-    let offset = point(0.0, v_metrics.ascent);
-
-    let glyphs: Vec<PositionedGlyph> = font.layout(&text, scale, offset)
-        .collect();
-
-    // Find the most visually pleasing width to display -> No idea what's going on exactly
-    let width = glyphs.iter()
-        .rev()
-        .filter_map(|g| {
-            g.pixel_bounding_box()
-                .map(|b| b.min.x as f32 + g.unpositioned().h_metrics().advance_width)
-        })
-        .next()
-        .unwrap_or(0.0)
-        .ceil() as usize;
-
-    let mut image = bg_col.resize_exact(width as u32, height as u32, FilterType::Nearest);
-
-    // Render glyphs on top of background
-    for glyph in glyphs {
-        if let Some(bb) = glyph.pixel_bounding_box() {
-            glyph.draw(|x, y, v| {
-                let x = x + bb.min.x as u32;
-                let y = y + bb.min.y as u32;
-                let mut current_pixel = image.get_pixel(x, y);
-                let mut pixel_col = *fg_col;
-                pixel_col.data[3] = (v * 255.0) as u8;
-                current_pixel.blend(&pixel_col);
-                image.put_pixel(x, y, current_pixel);
-            });
-        }
-    }
-
-    Ok(image)
-}
-
+#[cfg(test)]
+use parse_input;
 #[test]
 fn render_block_prevent_escape_sequences() {
     let mut col = DynamicImage::new_rgba8(1, 1);
     col.put_pixel(0, 0, Rgba { data: [255, 0, 255, 255] });
-    let result = render_block("TEXT\t\n\rx", &col, &col, 30.0, "./src/font.ttf").unwrap();
+    let block = ImageElement {
+        alignment: Alignment::LEFT,
+        bg_col: col.clone(),
+        fg_col: col,
+    };
+    let font = parse_input::get_settings().font;
+
+    let result = block.render(30, &font).unwrap();
     assert_eq!(result.get_pixel(0, 0), Rgba { data: [255, 0, 255, 255] });
 }
