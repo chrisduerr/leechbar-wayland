@@ -211,29 +211,61 @@ fn create_bar_from_elements(elements: &[Box<Blockable>],
                             -> Result<DynamicImage, Box<Error>> {
     let mut bar_img = bg_col.resize_exact(bar_width, bar_height, FilterType::Triangle);
 
-    let mut rendered_elements = Vec::new();
+    let mut left_elements = Vec::new();
+    let mut center_elements = Vec::new();
+    let mut right_elements = Vec::new();
     for element in elements {
-        rendered_elements.push(element.render(bar_height, font)?);
+        match element.alignment() {
+            Alignment::LEFT => left_elements.push(element.render(bar_height, font)?),
+            Alignment::CENTER => center_elements.push(element.render(bar_height, font)?),
+            Alignment::RIGHT => right_elements.push(element.render(bar_height, font)?),
+        }
     }
 
-    let mut x_offset = 0;
-    for element in rendered_elements {
-        let (ele_width, ele_height) = element.dimensions();
-        for x in 0..ele_width {
-            if x + x_offset >= bar_width {
-                break;
-            }
+    if let Some(mut left_image) = combine_elements(&left_elements) {
+        combine_images(&mut bar_img, &mut left_image, 0);
+    }
 
-            for y in 0..ele_height {
-                let mut element_pixel = bar_img.get_pixel(x + x_offset, y);
-                element_pixel.blend(&element.get_pixel(x, y));
-                bar_img.put_pixel(x + x_offset, y, element_pixel);
-            }
-        }
-        x_offset += ele_width;
+    if let Some(mut center_image) = combine_elements(&center_elements) {
+        let offset = bar_width / 2 - center_image.width() / 2;
+        combine_images(&mut bar_img, &mut center_image, offset);
+    }
+
+    if let Some(mut right_image) = combine_elements(&right_elements) {
+        let offset = bar_width - right_image.width();
+        combine_images(&mut bar_img, &mut right_image, offset);
     }
 
     Ok(bar_img)
+}
+
+// Draws the second image on top of the first one with an x-offset
+fn combine_images(first: &mut DynamicImage, second: &DynamicImage, offset: u32) {
+    for x in offset..cmp::min(offset + second.width(), first.width()) {
+        for y in 0..second.height() {
+            let mut pixel = first.get_pixel(x, y);
+            pixel.blend(&second.get_pixel(x - offset, y));
+            first.put_pixel(x, y, pixel);
+        }
+    }
+}
+
+fn combine_elements(elements: &[DynamicImage]) -> Option<DynamicImage> {
+    if elements.is_empty() {
+        None
+    } else {
+        let width = elements.iter().map(|img| img.width()).sum();
+        let height = elements[0].height();
+        let mut img = DynamicImage::new_rgba8(width, height);
+
+        let mut offset = 0;
+        for element in elements {
+            combine_images(&mut img, &element, offset);
+            offset += element.width();
+        }
+
+        Some(img)
+    }
 }
 
 fn img_to_file(img: DynamicImage) -> Result<File, io::Error> {

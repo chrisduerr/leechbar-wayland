@@ -68,7 +68,6 @@ fn parse_stdin(fg_col: Rgba<u8>,
                alignment: Alignment,
                stdin: &str)
                -> Result<Vec<Box<Blockable>>, Box<Error>> {
-    println!("->{}", stdin);
     if stdin.is_empty() {
         return Ok(Vec::new());
     }
