@@ -150,7 +150,7 @@ impl Blockable for ImageElement {
 }
 
 pub fn start_bar_creator(settings: Settings,
-                         bar_img_out: &Sender<File>,
+                         bar_img_out: Sender<File>,
                          resize_in: Receiver<i32>,
                          stdin_in: Receiver<Vec<Box<Blockable>>>)
                          -> Result<(), Box<Error>> {
@@ -222,18 +222,18 @@ fn create_bar_from_elements(elements: &[Box<Blockable>],
         }
     }
 
-    if let Some(mut left_image) = combine_elements(&left_elements) {
-        combine_images(&mut bar_img, &mut left_image, 0);
+    if let Some(left_image) = combine_elements(&left_elements) {
+        combine_images(&mut bar_img, &left_image, 0);
     }
 
-    if let Some(mut center_image) = combine_elements(&center_elements) {
+    if let Some(center_image) = combine_elements(&center_elements) {
         let offset = bar_width / 2 - center_image.width() / 2;
-        combine_images(&mut bar_img, &mut center_image, offset);
+        combine_images(&mut bar_img, &center_image, offset);
     }
 
-    if let Some(mut right_image) = combine_elements(&right_elements) {
+    if let Some(right_image) = combine_elements(&right_elements) {
         let offset = bar_width - right_image.width();
-        combine_images(&mut bar_img, &mut right_image, offset);
+        combine_images(&mut bar_img, &right_image, offset);
     }
 
     Ok(bar_img)
@@ -260,7 +260,7 @@ fn combine_elements(elements: &[DynamicImage]) -> Option<DynamicImage> {
 
         let mut offset = 0;
         for element in elements {
-            combine_images(&mut img, &element, offset);
+            combine_images(&mut img, element, offset);
             offset += element.width();
         }
 

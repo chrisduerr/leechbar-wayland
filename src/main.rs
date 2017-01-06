@@ -27,7 +27,7 @@ fn main() {
     {
         let settings = settings.clone();
         thread::spawn(move || {
-            create_bar::start_bar_creator(settings, &bar_img_out, resize_in, stdin_in).unwrap();
+            create_bar::start_bar_creator(settings, bar_img_out, resize_in, stdin_in).unwrap();
         });
     }
 
@@ -38,5 +38,5 @@ fn main() {
         });
     }
 
-    wayland::start_wayland_panel(&settings, &bar_img_in, &resize_out).unwrap();
+    wayland::start_wayland_panel(&settings, bar_img_in, resize_out).unwrap();
 }

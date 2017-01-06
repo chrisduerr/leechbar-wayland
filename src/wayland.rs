@@ -1,10 +1,11 @@
+use std::thread;
 use std::fs::File;
 use std::error::Error;
 use std::os::unix::io::AsRawFd;
 use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError};
-use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult, EventQueue};
+use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult};
 use wayland_client::protocol::{wl_compositor, wl_shell, wl_shm, wl_shell_surface, wl_seat,
-                               wl_pointer, wl_surface, wl_output, wl_display};
+                               wl_pointer, wl_surface, wl_output, wl_display, wl_registry};
 
 use parse_input::Settings;
 use self::generated::client::desktop_shell;
@@ -85,8 +86,8 @@ impl wl_output::Handler for EventHandler {
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
 
 pub fn start_wayland_panel(settings: &Settings,
-                           bar_img_in: &Receiver<File>,
-                           resize_out: &Sender<i32>)
+                           bar_img_in: Receiver<File>,
+                           resize_out: Sender<i32>)
                            -> Result<(), Box<Error>> {
     let (display, mut event_queue) = match wayland_client::default_connect() {
         Ok(ret) => ret,
@@ -113,15 +114,7 @@ pub fn start_wayland_panel(settings: &Settings,
         env.desktop_shell.set_panel(&env.output, &surface);
 
         // Export output for registering an event handler later
-        let mut output = None;
-        for &(name, ref interface, version) in env.globals() {
-            if interface == "wl_output" {
-                output = Some(request_result_to_result(registry.bind::<wl_output::WlOutput>(version,
-                                                                                        name),
-                                                       "Unabled to find WlOutput in globals.")?);
-            }
-        }
-        let output = output.ok_or("Unable to find WlOutput in globals.".to_owned())?;
+        let output: wl_output::WlOutput = reexport(env, &registry, "wl_output")?;
 
         (shell_surface, pointer, surface, output)
     };
@@ -133,48 +126,62 @@ pub fn start_wayland_panel(settings: &Settings,
     event_queue.register::<_, EventHandler>(&shell_surface, 1);
     event_queue.register::<_, EventHandler>(&output, 1);
 
-    let mut output_width = 0;
-    loop {
-        match event_in.try_recv() {
-            Ok(w) => {
-                output_width = w;
-                resize_out.send(output_width)?;
-            }
-            Err(TryRecvError::Empty) => (),
-            Err(_) => Err("Output resize channel disconnected".to_owned())?,
-        };
 
-        {
-            match bar_img_in.try_recv() {
-                Ok(bar_img) => {
-                    draw_bar(&bar_img,
-                             &mut event_queue,
-                             &surface,
-                             &display,
-                             output_width,
-                             settings.bar_height)?
+    let (draw_resize_out, draw_resize_in) = channel();
+    {
+        let state = event_queue.state();
+        let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
+        let shm = reexport(env, &registry, "wl_shm")?;
+
+        let settings = settings.clone();
+        thread::spawn(move || {
+            let mut output_width = 0;
+            while let Ok(bar_img) = bar_img_in.recv() {
+                while let Ok(width) = draw_resize_in.try_recv() {
+                    output_width = width;
                 }
-                Err(TryRecvError::Empty) => (),
-                Err(_) => Err("Bar creation channel disconnected.".to_owned())?,
-            };
+
+                if let Err(TryRecvError::Disconnected) = draw_resize_in.try_recv() {
+                    break;
+                }
+
+                if output_width > 0 &&
+                   draw_bar(&bar_img,
+                            &shm,
+                            &surface,
+                            &display,
+                            output_width,
+                            settings.bar_height)
+                    .is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    loop {
+        // TODO: Fix SHM buffer error when resizing sometimes
+        event_queue.dispatch()?;
+
+        while let Ok(width) = event_in.try_recv() {
+            resize_out.send(width)?;
+            draw_resize_out.send(width)?;
         }
 
-        // TODO: Fix SHM buffer error when resizing sometimeh
-        event_queue.sync_roundtrip()?;
+        if let Err(TryRecvError::Disconnected) = event_in.try_recv() {
+            Err("Wayland event channel disconnected".to_owned())?;
+        };
     }
 }
 
 fn draw_bar(bar_img: &File,
-            event_queue: &mut EventQueue,
+            shm: &wl_shm::WlShm,
             surface: &wl_surface::WlSurface,
             display: &wl_display::WlDisplay,
             bar_width: i32,
             bar_height: i32)
             -> Result<(), Box<Error>> {
-    let state = event_queue.state();
-    let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
-
-    let pool = match env.shm.create_pool(bar_img.as_raw_fd(), bar_height * bar_width * 4) {
+    let pool = match shm.create_pool(bar_img.as_raw_fd(), bar_height * bar_width * 4) {
         RequestResult::Sent(pool) => pool,
         RequestResult::Destroyed => Err("SHM already destroyed.".to_owned())?,
     };
@@ -195,6 +202,19 @@ fn draw_bar(bar_img: &File,
     let _ = display.flush();
 
     Ok(())
+}
+
+fn reexport<T: wayland_client::Proxy>(env: &EnvHandler<WaylandEnv>,
+                                      registry: &wl_registry::WlRegistry,
+                                      interface_name: &str)
+                                      -> Result<T, Box<Error>> {
+    for &(name, ref interface, version) in env.globals() {
+        if interface == interface_name {
+            return Ok(request_result_to_result(registry.bind::<T>(version, name),
+                                               "Unabled to find WlOutput in globals.")?);
+        }
+    }
+    Err(format!("Unable to find {} in globals.", interface_name))?
 }
 
 fn request_result_to_result<T>(request_result: RequestResult<T>,
