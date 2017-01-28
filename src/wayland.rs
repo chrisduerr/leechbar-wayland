@@ -7,7 +7,6 @@ use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult};
 use wayland_client::protocol::{wl_compositor, wl_shell, wl_shm, wl_shell_surface, wl_seat,
                                wl_pointer, wl_surface, wl_output, wl_display, wl_registry};
 
-use parse_input::Settings;
 use self::generated::client::desktop_shell;
 
 mod generated {
@@ -85,8 +84,7 @@ impl wl_output::Handler for EventHandler {
 }
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
 
-pub fn start_wayland_panel(settings: &Settings,
-                           bar_img_in: Receiver<File>,
+pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
                            resize_out: Sender<i32>)
                            -> Result<(), Box<Error>> {
     let (display, mut event_queue) = match wayland_client::default_connect() {
@@ -133,10 +131,9 @@ pub fn start_wayland_panel(settings: &Settings,
         let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
         let shm = reexport(env, &registry, "wl_shm")?;
 
-        let settings = settings.clone();
         thread::spawn(move || {
             let mut output_width = 0;
-            while let Ok(bar_img) = bar_img_in.recv() {
+            while let Ok((bar_img, bar_height)) = bar_img_in.recv() {
                 while let Ok(width) = draw_resize_in.try_recv() {
                     output_width = width;
                 }
@@ -146,13 +143,7 @@ pub fn start_wayland_panel(settings: &Settings,
                 }
 
                 if output_width > 0 &&
-                   draw_bar(&bar_img,
-                            &shm,
-                            &surface,
-                            &display,
-                            output_width,
-                            settings.bar_height)
-                    .is_err() {
+                   draw_bar(&bar_img, &shm, &surface, &display, output_width, bar_height).is_err() {
                     break;
                 }
             }

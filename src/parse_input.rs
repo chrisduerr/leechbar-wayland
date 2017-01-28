@@ -1,4 +1,5 @@
-use regex::Regex;
+use toml;
+use std::thread;
 use std::io::Read;
 use std::fs::File;
 use std::{io, env};
@@ -10,162 +11,204 @@ use std::sync::mpsc::Sender;
 use rusttype::{Font, FontCollection};
 use image::{self, Rgba, DynamicImage, GenericImage};
 
-use create_bar::{TextElement, ImageElement, Blockable, Alignment};
+use modules::{MODULES, Block};
 
-pub struct Settings {
-    pub bar_height: i32,
-    pub bg_col: DynamicImage,
-    pub fg_col: Rgba<u8>,
-    pub font: Font<'static>,
+pub struct Config {
+    // Defaults for each element:
+    pub bg: DynamicImage,
+    pub fg: Rgba<u8>,
+    pub font: Option<Font<'static>>,
+    pub font_height: Option<u32>,
+    pub resize: bool,
+    pub width: u32,
+    pub spacing: u32,
+    pub interval: u32,
+
+    // Exclusive to bar:
+    pub bar_height: u32,
+    pub top: bool,
+    pub left_blocks: Vec<Box<Block>>,
+    pub center_blocks: Vec<Box<Block>>,
+    pub right_blocks: Vec<Box<Block>>,
 }
 
-impl Clone for Settings {
-    fn clone(&self) -> Settings {
-        Settings {
-            bar_height: self.bar_height,
-            bg_col: self.bg_col.clone(),
-            fg_col: self.fg_col,
+// Left/Center/Right blocks information is lost when copying
+impl Clone for Config {
+    fn clone(&self) -> Config {
+        Config {
+            bg: self.bg.clone(),
+            fg: self.fg,
             font: self.font.clone(),
+            font_height: self.font_height,
+            resize: self.resize,
+            width: self.width,
+            spacing: self.spacing,
+            interval: self.interval,
+
+            bar_height: self.bar_height,
+            top: self.top,
+            left_blocks: Vec::new(),
+            center_blocks: Vec::new(),
+            right_blocks: Vec::new(),
         }
     }
 }
 
-pub fn read_stdin(settings: Settings,
-                  stdin_out: &Sender<Vec<Box<Blockable>>>)
-                  -> Result<(), Box<Error>> {
+pub fn read_config(blocks_out: &Sender<Config>) -> Result<(), Box<Error>> {
+    let mut config_buf = String::new();
+    let mut config_file = File::open(format!("{}/.config/leechbar/config.toml", get_home_dir()?))?;
+    config_file.read_to_string(&mut config_buf)?;
+    let config_val: toml::Value = config_buf.parse().map_err(|_| "Unable to parse config.")?;
+
     loop {
-        let mut buffer = String::new();
-        if let Ok(out_length) = io::stdin().read_line(&mut buffer) {
-            if out_length > 0 {
-                let mut blank_bg = DynamicImage::new_rgba8(1, 1);
-                blank_bg.put_pixel(0, 0, Rgba::<u8> { data: [0, 0, 0, 0] });
-                stdin_out.send(parse_stdin(settings.fg_col, blank_bg, Alignment::LEFT, &buffer)?)?;
-            }
-        }
+        let settings = parse_settings(&config_val)?; // TODO: Don't read every loop
+        blocks_out.send(settings)?;
+        thread::sleep_ms(1000); // TODO: Fix your shit
     }
+
+    Ok(())
 }
 
-pub fn get_settings() -> Settings {
-    // TODO: ARGPARSE OR SOMETHING?
-    let mut bg_col = DynamicImage::new_rgba8(1, 1);
-    bg_col.put_pixel(0, 0, Rgba { data: [255, 0, 0, 255] });
+fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<Error>> {
+    let general = config_val.lookup("general").ok_or("Unable to find [general] in the config.")?;
 
-    let font_file = File::open("./font.ttf").unwrap();
-    let font_data = font_file.bytes().collect::<Result<Vec<u8>, io::Error>>().unwrap();
-    let collection = FontCollection::from_bytes(font_data);
-    let font = collection.into_font().ok_or("Invalid font type.".to_owned()).unwrap();
-
-    Settings {
-        bar_height: 30,
-        bg_col: bg_col,
-        fg_col: Rgba { data: [255, 0, 255, 255] },
-        font: font,
-    }
-}
-
-fn parse_stdin(fg_col: Rgba<u8>,
-               bg_col: DynamicImage,
-               alignment: Alignment,
-               stdin: &str)
-               -> Result<Vec<Box<Blockable>>, Box<Error>> {
-    if stdin.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if stdin.starts_with('{') && &stdin[1..2] != "{" {
-        return parse_block(fg_col, bg_col, alignment, stdin);
-    }
-
-    let mut next_block_index = stdin.len();
-    let block_match = Regex::new("[^\\{]\\{[^\\{]").unwrap().find(stdin);
-    if block_match.is_some() {
-        next_block_index = block_match.unwrap().start() + 1;
-    }
-
-    let element = TextElement {
-        alignment: alignment,
-        bg_col: bg_col.clone(),
-        fg_col: fg_col,
-        text: stdin[..next_block_index].to_owned(),
+    let mut black_img = DynamicImage::new_rgba8(1, 1);
+    black_img.put_pixel(0, 0, Rgba::<u8> { data: [0, 0, 0, 255] });
+    let mut config = Config {
+        fg: Rgba::<u8> { data: [255, 255, 255, 255] },
+        bg: black_img,
+        font: None,
+        font_height: None,
+        resize: false,
+        width: 0,
+        spacing: 0,
+        interval: 0,
+        bar_height: 0,
+        top: true,
+        left_blocks: Vec::new(),
+        center_blocks: Vec::new(),
+        right_blocks: Vec::new(),
     };
+    config = block_from_toml(&general, &config)?;
 
-    let mut elements: Vec<Box<Blockable>> =
-        parse_stdin(fg_col, bg_col, alignment, &stdin[next_block_index..])?;
-    elements.insert(0, Box::new(element));
-    Ok(elements)
+    config.bar_height = toml_value_to_integer(&general, "bar_height")? as u32;
+    config.top = toml_value_to_bool(&general, "top").unwrap_or(true);
+
+    config.left_blocks = toml_value_to_blocks(&general, config_val, "left_blocks", &config)?;
+    config.center_blocks = toml_value_to_blocks(&general, config_val, "center_blocks", &config)?;
+    config.right_blocks = toml_value_to_blocks(&general, config_val, "right_blocks", &config)?;
+
+    Ok(config)
 }
 
-fn parse_block(fg_col: Rgba<u8>,
-               bg_col: DynamicImage,
-               alignment: Alignment,
-               stdin: &str)
-               -> Result<Vec<Box<Blockable>>, Box<Error>> {
-    let mut next_text_index = stdin.len() - 1;
-    let text_match = Regex::new("[^}]}[^}]").unwrap().find(stdin);
-    if let Some(text_match) = text_match {
-        next_text_index = text_match.start() + 1;
+// Creates a Block from a toml field
+// Depending on "is_config" it raises errors if certain fields are missing
+fn block_from_toml(general_val: &toml::Value, fallback: &Config) -> Result<Config, Box<Error>> {
+    let mut config = fallback.clone();
+
+    config.bg = toml_value_to_image(general_val, "bg").unwrap_or_else(|_| fallback.bg.clone());
+    config.fg = toml_value_to_rgba(general_val, "fg").unwrap_or(fallback.fg);
+    config.resize = toml_value_to_bool(general_val, "resize").unwrap_or(fallback.resize);
+    config.width = toml_value_to_integer(general_val, "width").unwrap_or(fallback.width);
+    config.spacing = toml_value_to_integer(general_val, "spacing").unwrap_or(fallback.spacing);
+    config.interval = toml_value_to_integer(general_val, "interval").unwrap_or(fallback.interval);
+
+    // Unwrap because if these missing it's over anyways.
+    config.font = Some(toml_value_to_font(general_val, "font")
+        .unwrap_or_else(|_| fallback.font.clone().ok_or("Font required in [general].").unwrap()));
+    config.font_height = Some(toml_value_to_integer(general_val, "font_height")
+        .unwrap_or_else(|_| {
+            fallback.font_height.ok_or("Font Height required in [general].").unwrap()
+        }));
+
+    Ok(config)
+}
+
+fn toml_value_to_blocks(general_val: &toml::Value,
+                        config_val: &toml::Value,
+                        name: &str,
+                        config: &Config)
+                        -> Result<Vec<Box<Block>>, Box<Error>> {
+    let blocks_text = toml_value_to_string(general_val, name)?;
+    let blocks_split = blocks_text.split(' ');
+
+    let mut blocks = Vec::new();
+    for mut block_name in blocks_split {
+        block_name = block_name.trim();
+        if block_name.is_empty() {
+            continue;
+        }
+
+        let block_val = config_val.lookup(block_name)
+            .ok_or(format!("Could not find toml value {}.", block_name))?;
+        let block_config = block_from_toml(block_val, config)?;
+
+        let module_name = toml_value_to_string(block_val, "module")?;
+        blocks.push(MODULES.get(module_name.as_str())
+            .ok_or(format!("Unable to find module {}.", module_name))?(block_config, &block_val)?);
     }
 
-    if let Some(alignment) = match &stdin[1..2] {
-        "l" => Some(Alignment::LEFT),
-        "c" => Some(Alignment::CENTER),
-        "r" => Some(Alignment::RIGHT),
-        _ => None,
-    } {
-        return parse_stdin(fg_col, bg_col, alignment, &stdin[next_text_index + 1..]);
-    }
+    Ok(blocks)
+}
 
-    match stdin[2..3].to_lowercase().as_ref() {
-        "#" => {
-            let rgba = string_to_rgba(&stdin[3..next_text_index])?;
-            match stdin[1..2].to_lowercase().as_ref() {
-                "b" => {
-                    let mut bg_col = DynamicImage::new_rgba8(1, 1);
-                    bg_col.put_pixel(0, 0, rgba);
-                    parse_stdin(fg_col, bg_col, alignment, &stdin[next_text_index + 1..])
-                }
-                _ => {
-                    parse_stdin(string_to_rgba(&stdin[3..next_text_index])?,
-                                bg_col,
-                                alignment,
-                                &stdin[next_text_index + 1..])
-                }
-            }
-        }
-        _ => {
-            let image = load_image(&stdin[2..next_text_index])?;
-            match stdin[1..2].to_lowercase().as_ref() {
-                "b" => parse_stdin(fg_col, image, alignment, &stdin[next_text_index + 1..]),
-                _ => {
-                    let element = ImageElement {
-                        alignment: alignment,
-                        bg_col: bg_col.clone(),
-                        fg_col: image,
-                    };
-                    let mut elements =
-                        parse_stdin(fg_col, bg_col, alignment, &stdin[next_text_index + 1..])?;
-                    elements.insert(0, Box::new(element));
-                    Ok(elements)
-                }
-            }
-        }
+fn toml_value_to_bool(general_val: &toml::Value, name: &str) -> Result<bool, String> {
+    let value = general_val.lookup(name).ok_or(format!("Could not find toml value {}.", name))?;
+    Ok(value.as_bool().ok_or("Toml value not an integer.")?)
+}
+
+fn toml_value_to_integer(general_val: &toml::Value, name: &str) -> Result<u32, String> {
+    let value = general_val.lookup(name).ok_or(format!("Could not find toml value {}.", name))?;
+    Ok(value.as_integer().ok_or("Toml value not an integer.")? as u32)
+}
+
+fn toml_value_to_string(general_val: &toml::Value, name: &str) -> Result<String, String> {
+    let value = general_val.lookup(name).ok_or(format!("Could not find toml value {}.", name))?;
+    Ok(value.as_str().ok_or("Toml value not a string.")?.to_owned())
+}
+
+fn toml_value_to_rgba(general_val: &toml::Value, name: &str) -> Result<Rgba<u8>, Box<Error>> {
+    let col_string = toml_value_to_string(general_val, name)?;
+    Ok(string_to_rgba(&col_string)?)
+}
+
+fn toml_value_to_image(general_val: &toml::Value, name: &str) -> Result<DynamicImage, Box<Error>> {
+    let path = toml_value_to_string(general_val, name)?;
+
+    if path.starts_with('#') {
+        let mut img = DynamicImage::new_rgba8(1, 1);
+        let str_rgba = string_to_rgba(&path)?;
+        img.put_pixel(0, 0, str_rgba);
+
+        Ok(img)
+    } else {
+        let home = get_home_dir()?;
+        let path = path.replace('~', &home).replace("$HOME", &home);
+
+        Ok(image::open(&Path::new(&path))?)
     }
 }
 
-fn load_image(path: &str) -> Result<DynamicImage, Box<Error>> {
-    let home_dir = env::home_dir().ok_or("Could not find home dir.".to_owned())?;
-    let home_str = home_dir.to_string_lossy();
-    let path = path.replace('~', &home_str).replace("$HOME", &home_str);
-    Ok(image::open(&Path::new(&path))?)
+// Uses string as path to load a font file
+fn toml_value_to_font(general_val: &toml::Value, name: &str) -> Result<Font<'static>, Box<Error>> {
+    let home = get_home_dir()?;
+    let font_string =
+        toml_value_to_string(general_val, name)?.replace("$", &home).replace("~", &home);
+
+    let font_file = File::open(&font_string)?;
+    let font_data = font_file.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
+    let collection = FontCollection::from_bytes(font_data);
+    let font = collection.into_font().ok_or("Please only use valid TTF fonts.")?;
+
+    Ok(font)
 }
 
 fn string_to_rgba(col_string: &str) -> Result<Rgba<u8>, ParseIntError> {
-    let red_string = col_string[..2].to_lowercase();
-    let blue_string = col_string[4..6].to_lowercase();
-    let green_string = col_string[2..4].to_lowercase();
+    let red_string = col_string[1..3].to_lowercase();
+    let blue_string = col_string[5..7].to_lowercase();
+    let green_string = col_string[3..5].to_lowercase();
     let alpha_string = {
-        if col_string.len() > 6 {
-            col_string[6..8].to_lowercase()
+        if col_string.len() > 7 {
+            col_string[7..9].to_lowercase()
         } else {
             "ff".to_owned()
         }
@@ -179,62 +222,8 @@ fn string_to_rgba(col_string: &str) -> Result<Rgba<u8>, ParseIntError> {
     Ok(Rgba { data: [red, green, blue, alpha] })
 }
 
-#[test]
-fn stdin_parser_result_correct() {
-    let mut default_col = DynamicImage::new_rgba8(1, 1);
-    default_col.put_pixel(0, 0, Rgba::<u8> { data: [0, 0, 0, 0] });
-    let stdin = "{B#ff00ff}TestString{F#00ff0000}{r}aaa{F#ffffffff}99{F#00000000}";
-
-    let mut result = Vec::new();
-    for r in parse_stdin(Rgba { data: [0, 0, 0, 0] },
-                         default_col,
-                         Alignment::LEFT,
-                         stdin)
-        .unwrap() {
-        result.push(r.as_textelement());
-    }
-
-    assert_eq!(result.len(), 3);
-
-    assert_eq!(result[0].bg_col.get_pixel(0, 0),
-               Rgba { data: [255, 0, 255, 255] });
-    assert_eq!(result[0].fg_col, Rgba { data: [0, 0, 0, 0] });
-    assert_eq!(result[0].text, "TestString".to_owned());
-    assert_eq!(result[0].alignment, Alignment::LEFT);
-
-    assert_eq!(result[1].bg_col.get_pixel(0, 0),
-               Rgba { data: [255, 0, 255, 255] });
-    assert_eq!(result[1].fg_col, Rgba { data: [0, 255, 0, 0] });
-    assert_eq!(result[1].text, "aaa".to_owned());
-    assert_eq!(result[1].alignment, Alignment::RIGHT);
-
-    assert_eq!(result[2].bg_col.get_pixel(0, 0),
-               Rgba { data: [255, 0, 255, 255] });
-    assert_eq!(result[2].fg_col, Rgba { data: [255, 255, 255, 255] });
-    assert_eq!(result[2].text, "99".to_owned());
-    assert_eq!(result[2].alignment, Alignment::RIGHT);
-}
-
-#[test]
-fn stdin_parser_single_element() {
-    let mut default_col = DynamicImage::new_rgba8(1, 1);
-    default_col.put_pixel(0, 0, Rgba::<u8> { data: [0, 0, 0, 0] });
-
-    let stdin = "{B#ff00ff}{F#00ff00}TEST1TEST2TEST3TEST4TEST5TEST6";
-    let mut result = Vec::new();
-    for r in parse_stdin(Rgba { data: [0, 0, 0, 0] },
-                         default_col,
-                         Alignment::LEFT,
-                         stdin)
-        .unwrap() {
-        result.push(r.as_textelement());
-    }
-
-    assert_eq!(result.len(), 1);
-
-    assert_eq!(result[0].bg_col.get_pixel(0, 0),
-               Rgba { data: [255, 0, 255, 255] });
-    assert_eq!(result[0].fg_col, Rgba { data: [0, 255, 0, 255] });
-    assert_eq!(result[0].text, "TEST1TEST2TEST3TEST4TEST5TEST6".to_owned());
-    assert_eq!(result[0].alignment, Alignment::LEFT);
+fn get_home_dir() -> Result<String, String> {
+    let home_dir = env::home_dir().ok_or("Could not find home dir.")?;
+    let home_str = home_dir.to_string_lossy();
+    Ok(home_str.to_string())
 }
