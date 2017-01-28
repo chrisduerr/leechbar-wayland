@@ -7,12 +7,14 @@ use std::path::Path;
 use std::boxed::Box;
 use std::error::Error;
 use std::num::ParseIntError;
+use std::sync::{Mutex, Arc};
 use std::sync::mpsc::Sender;
 use rusttype::{Font, FontCollection};
 use image::{self, Rgba, DynamicImage, GenericImage};
 
 use modules::{MODULES, Block};
 
+#[derive(Clone)]
 pub struct Config {
     // Defaults for each element:
     pub bg: DynamicImage,
@@ -27,31 +29,9 @@ pub struct Config {
     // Exclusive to bar:
     pub bar_height: u32,
     pub top: bool,
-    pub left_blocks: Vec<Box<Block>>,
-    pub center_blocks: Vec<Box<Block>>,
-    pub right_blocks: Vec<Box<Block>>,
-}
-
-// Left/Center/Right blocks information is lost when copying
-impl Clone for Config {
-    fn clone(&self) -> Config {
-        Config {
-            bg: self.bg.clone(),
-            fg: self.fg,
-            font: self.font.clone(),
-            font_height: self.font_height,
-            resize: self.resize,
-            width: self.width,
-            spacing: self.spacing,
-            interval: self.interval,
-
-            bar_height: self.bar_height,
-            top: self.top,
-            left_blocks: Vec::new(),
-            center_blocks: Vec::new(),
-            right_blocks: Vec::new(),
-        }
-    }
+    pub left_blocks: Vec<Arc<Mutex<Block>>>,
+    pub center_blocks: Vec<Arc<Mutex<Block>>>,
+    pub right_blocks: Vec<Arc<Mutex<Block>>>,
 }
 
 pub fn read_config(blocks_out: &Sender<Config>) -> Result<(), Box<Error>> {
@@ -60,9 +40,10 @@ pub fn read_config(blocks_out: &Sender<Config>) -> Result<(), Box<Error>> {
     config_file.read_to_string(&mut config_buf)?;
     let config_val: toml::Value = config_buf.parse().map_err(|_| "Unable to parse config.")?;
 
+    let settings = parse_settings(&config_val)?;
+
     loop {
-        let settings = parse_settings(&config_val)?; // TODO: Don't read every loop
-        blocks_out.send(settings)?;
+        blocks_out.send(settings.clone())?;
         thread::sleep_ms(1000); // TODO: Fix your shit
     }
 
@@ -128,7 +109,7 @@ fn toml_value_to_blocks(general_val: &toml::Value,
                         config_val: &toml::Value,
                         name: &str,
                         config: &Config)
-                        -> Result<Vec<Box<Block>>, Box<Error>> {
+                        -> Result<Vec<Arc<Mutex<Block>>>, Box<Error>> {
     let blocks_text = toml_value_to_string(general_val, name)?;
     let blocks_split = blocks_text.split(' ');
 

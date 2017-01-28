@@ -3,6 +3,7 @@ use toml::Value;
 use rusttype::Font;
 use std::error::Error;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use image::{DynamicImage, Rgba};
 
 use modules::Block;
@@ -22,11 +23,11 @@ pub struct CommandBlock {
 
 // Unwraps cannot fail
 impl CommandBlock {
-    pub fn new(config: Config, value: &Value) -> Result<Box<Block>, Box<Error>> {
+    pub fn new(config: Config, value: &Value) -> Result<Arc<Mutex<Block>>, Box<Error>> {
         let command = value.lookup("command").ok_or("Could not find command in a command module.")?;
         let command = command.as_str().ok_or("Command in command module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
-        Ok(Box::new(CommandBlock {
+        Ok(Arc::new(Mutex::new(CommandBlock {
             bar_height: config.bar_height,
             font_height: font_height,
             font: config.font.unwrap(),
@@ -35,7 +36,7 @@ impl CommandBlock {
             width: config.width,
             spacing: config.spacing,
             command: command.to_owned(),
-        }))
+        })))
     }
 }
 

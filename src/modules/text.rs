@@ -1,6 +1,7 @@
 use std::cmp;
 use toml::Value;
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use rusttype::{Font, Scale, point, PositionedGlyph};
 use image::{DynamicImage, GenericImage, Rgba, Pixel};
 
@@ -21,11 +22,11 @@ pub struct TextBlock {
 
 // Unwraps cannot fail
 impl TextBlock {
-    pub fn new(config: Config, value: &Value) -> Result<Box<Block>, Box<Error>> {
+    pub fn new(config: Config, value: &Value) -> Result<Arc<Mutex<Block>>, Box<Error>> {
         let text = value.lookup("text").ok_or("Could not find text in a text module.")?;
         let text = text.as_str().ok_or("Text in text module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
-        Ok(Box::new(TextBlock {
+        Ok(Arc::new(Mutex::new(TextBlock {
             bar_height: config.bar_height,
             font_height: font_height,
             font: config.font.unwrap(),
@@ -35,7 +36,7 @@ impl TextBlock {
             width: config.width,
             spacing: config.spacing,
             cache: None,
-        }))
+        })))
     }
 }
 

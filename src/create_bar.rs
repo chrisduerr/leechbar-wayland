@@ -3,6 +3,7 @@ use std::fs::File;
 use std::error::Error;
 use std::{thread, cmp};
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use image::{GenericImage, Pixel, DynamicImage, FilterType};
@@ -77,14 +78,14 @@ fn create_bar_from_config(config: &mut Config, bar_width: u32) -> Result<Dynamic
     Ok(bar_img)
 }
 
-fn combine_elements(blocks: &mut [Box<Block>],
+fn combine_elements(blocks: &mut [Arc<Mutex<Block>>],
                     bar_height: u32)
                     -> Result<Option<DynamicImage>, Box<Error>> {
     if blocks.is_empty() {
         Ok(None)
     } else {
         let images = blocks.iter_mut()
-            .map(|block| block.render())
+            .map(|block| block.lock().unwrap().render())
             .collect::<Result<Vec<DynamicImage>, Box<Error>>>()?;
         let width = images.iter().map(|img| img.width()).sum();
         let mut result_img = DynamicImage::new_rgba8(width, bar_height);
