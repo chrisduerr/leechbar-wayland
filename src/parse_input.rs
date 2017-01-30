@@ -1,5 +1,4 @@
 use toml;
-use std::thread;
 use std::io::Read;
 use std::fs::File;
 use std::{io, env};
@@ -7,14 +6,11 @@ use std::path::Path;
 use std::boxed::Box;
 use std::error::Error;
 use std::num::ParseIntError;
-use std::sync::{Mutex, Arc};
-use std::sync::mpsc::Sender;
 use rusttype::{Font, FontCollection};
 use image::{self, Rgba, DynamicImage, GenericImage};
 
 use modules::{MODULES, Block};
 
-#[derive(Clone)]
 pub struct Config {
     // Defaults for each element:
     pub bg: DynamicImage,
@@ -29,25 +25,41 @@ pub struct Config {
     // Exclusive to bar:
     pub bar_height: u32,
     pub top: bool,
-    pub left_blocks: Vec<Arc<Mutex<Block>>>,
-    pub center_blocks: Vec<Arc<Mutex<Block>>>,
-    pub right_blocks: Vec<Arc<Mutex<Block>>>,
+    pub left_blocks: Vec<Box<Block>>,
+    pub center_blocks: Vec<Box<Block>>,
+    pub right_blocks: Vec<Box<Block>>,
 }
 
-pub fn read_config(blocks_out: &Sender<Config>) -> Result<(), Box<Error>> {
+// Blocks are dropped on clone since this is never needed after a clone
+// If needed they need to be wrapped in Arc<Box<> instead of Box<>
+impl Clone for Config {
+    fn clone(&self) -> Config {
+        Config {
+            bg: self.bg.clone(),
+            fg: self.fg,
+            font: self.font.clone(),
+            font_height: self.font_height,
+            resize: self.resize,
+            width: self.width,
+            spacing: self.spacing,
+            interval: self.interval,
+
+            bar_height: self.bar_height,
+            top: self.top,
+            left_blocks: Vec::new(),
+            center_blocks: Vec::new(),
+            right_blocks: Vec::new(),
+        }
+    }
+}
+
+pub fn read_config() -> Result<Config, Box<Error>> {
     let mut config_buf = String::new();
     let mut config_file = File::open(format!("{}/.config/leechbar/config.toml", get_home_dir()?))?;
     config_file.read_to_string(&mut config_buf)?;
     let config_val: toml::Value = config_buf.parse().map_err(|_| "Unable to parse config.")?;
 
-    let settings = parse_settings(&config_val)?;
-
-    loop {
-        blocks_out.send(settings.clone())?;
-        thread::sleep_ms(1000); // TODO: Fix your shit
-    }
-
-    Ok(())
+    Ok(parse_settings(&config_val)?)
 }
 
 fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<Error>> {
@@ -70,14 +82,14 @@ fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<Error>> {
         center_blocks: Vec::new(),
         right_blocks: Vec::new(),
     };
-    config = block_from_toml(&general, &config)?;
+    config = block_from_toml(general, &config)?;
 
-    config.bar_height = toml_value_to_integer(&general, "bar_height")? as u32;
-    config.top = toml_value_to_bool(&general, "top").unwrap_or(true);
+    config.bar_height = toml_value_to_integer(general, "bar_height")? as u32;
+    config.top = toml_value_to_bool(general, "top").unwrap_or(true);
 
-    config.left_blocks = toml_value_to_blocks(&general, config_val, "left_blocks", &config)?;
-    config.center_blocks = toml_value_to_blocks(&general, config_val, "center_blocks", &config)?;
-    config.right_blocks = toml_value_to_blocks(&general, config_val, "right_blocks", &config)?;
+    config.left_blocks = toml_value_to_blocks(general, config_val, "left_blocks", &config)?;
+    config.center_blocks = toml_value_to_blocks(general, config_val, "center_blocks", &config)?;
+    config.right_blocks = toml_value_to_blocks(general, config_val, "right_blocks", &config)?;
 
     Ok(config)
 }
@@ -109,7 +121,7 @@ fn toml_value_to_blocks(general_val: &toml::Value,
                         config_val: &toml::Value,
                         name: &str,
                         config: &Config)
-                        -> Result<Vec<Arc<Mutex<Block>>>, Box<Error>> {
+                        -> Result<Vec<Box<Block>>, Box<Error>> {
     let blocks_text = toml_value_to_string(general_val, name)?;
     let blocks_split = blocks_text.split(' ');
 
@@ -121,29 +133,33 @@ fn toml_value_to_blocks(general_val: &toml::Value,
         }
 
         let block_val = config_val.lookup(block_name)
-            .ok_or(format!("Could not find toml value {}.", block_name))?;
+            .ok_or_else(|| format!("Could not find toml value {}.", block_name))?;
         let block_config = block_from_toml(block_val, config)?;
 
         let module_name = toml_value_to_string(block_val, "module")?;
         blocks.push(MODULES.get(module_name.as_str())
-            .ok_or(format!("Unable to find module {}.", module_name))?(block_config, &block_val)?);
+            .ok_or_else(|| format!("Unable to find module {}.", module_name))?(block_config,
+                                                                               block_val)?);
     }
 
     Ok(blocks)
 }
 
 fn toml_value_to_bool(general_val: &toml::Value, name: &str) -> Result<bool, String> {
-    let value = general_val.lookup(name).ok_or(format!("Could not find toml value {}.", name))?;
+    let value = general_val.lookup(name)
+        .ok_or_else(|| format!("Could not find toml value {}.", name))?;
     Ok(value.as_bool().ok_or("Toml value not an integer.")?)
 }
 
 fn toml_value_to_integer(general_val: &toml::Value, name: &str) -> Result<u32, String> {
-    let value = general_val.lookup(name).ok_or(format!("Could not find toml value {}.", name))?;
+    let value = general_val.lookup(name)
+        .ok_or_else(|| format!("Could not find toml value {}.", name))?;
     Ok(value.as_integer().ok_or("Toml value not an integer.")? as u32)
 }
 
 fn toml_value_to_string(general_val: &toml::Value, name: &str) -> Result<String, String> {
-    let value = general_val.lookup(name).ok_or(format!("Could not find toml value {}.", name))?;
+    let value = general_val.lookup(name)
+        .ok_or_else(|| format!("Could not find toml value {}.", name))?;
     Ok(value.as_str().ok_or("Toml value not a string.")?.to_owned())
 }
 

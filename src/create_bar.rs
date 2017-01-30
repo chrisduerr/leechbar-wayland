@@ -3,37 +3,27 @@ use std::fs::File;
 use std::error::Error;
 use std::{thread, cmp};
 use std::io::{self, Write};
-use std::sync::{Arc, Mutex};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use image::{GenericImage, Pixel, DynamicImage, FilterType};
 
 use modules::Block;
-use parse_input::Config;
+use parse_input::{self, Config};
 
 pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
-                         resize_in: Receiver<i32>,
-                         config_in: Receiver<Config>)
+                         resize_in: Receiver<i32>)
                          -> Result<(), Box<Error>> {
     let mut output_width = 0;
     let (combined_out, combined_in) = channel();
+
+    let mut config = parse_input::read_config()?;
+    // TODO: Start scheduler for every blockable
 
     {
         let combined_out = combined_out.clone();
         thread::spawn(move || {
             while let Ok(output_width) = resize_in.recv() {
-                if combined_out.send((Some(output_width), None)).is_err() {
-                    break;
-                }
-            }
-        });
-    }
-
-    {
-        let combined_out = combined_out.clone();
-        thread::spawn(move || {
-            while let Ok(cfg) = config_in.recv() {
-                if combined_out.send((None, Some(cfg))).is_err() {
+                if combined_out.send(Some(output_width)).is_err() {
                     break;
                 }
             }
@@ -42,13 +32,12 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
 
     loop {
         match combined_in.recv() {
-            Ok((width, config)) => {
-                if let Some(width) = width {
+            Ok(combined) => {
+                if let Some(width) = combined {
                     output_width = width;
                 }
 
-                if output_width > 0 && config.is_some() {
-                    let mut config = config.unwrap();
+                if output_width > 0 {
                     let bar_img = create_bar_from_config(&mut config, output_width as u32)?;
                     bar_img_out.send((img_to_file(bar_img)?, config.bar_height as i32))?;
                 }
@@ -78,14 +67,14 @@ fn create_bar_from_config(config: &mut Config, bar_width: u32) -> Result<Dynamic
     Ok(bar_img)
 }
 
-fn combine_elements(blocks: &mut [Arc<Mutex<Block>>],
+fn combine_elements(blocks: &mut [Box<Block>],
                     bar_height: u32)
                     -> Result<Option<DynamicImage>, Box<Error>> {
     if blocks.is_empty() {
         Ok(None)
     } else {
         let images = blocks.iter_mut()
-            .map(|block| block.lock().unwrap().render())
+            .map(|block| block.render())
             .collect::<Result<Vec<DynamicImage>, Box<Error>>>()?;
         let width = images.iter().map(|img| img.width()).sum();
         let mut result_img = DynamicImage::new_rgba8(width, bar_height);

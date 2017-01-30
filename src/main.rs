@@ -24,17 +24,10 @@ mod parse_input;
 fn main() {
     let (bar_img_out, bar_img_in) = channel();
     let (resize_out, resize_in) = channel();
-    let (config_out, config_in) = channel();
 
     {
         thread::spawn(move || {
-            create_bar::start_bar_creator(bar_img_out, resize_in, config_in).unwrap();
-        });
-    }
-
-    {
-        thread::spawn(move || {
-            parse_input::read_config(&config_out).unwrap();
+            create_bar::start_bar_creator(bar_img_out, resize_in).unwrap();
         });
     }
 
