@@ -85,7 +85,7 @@ impl wl_output::Handler for EventHandler {
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
 
 pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
-                           resize_out: Sender<i32>)
+                           resize_out: Sender<u32>)
                            -> Result<(), Box<Error>> {
     let (display, mut event_queue) = match wayland_client::default_connect() {
         Ok(ret) => ret,
@@ -155,7 +155,7 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
         event_queue.dispatch()?;
 
         while let Ok(width) = event_in.try_recv() {
-            resize_out.send(width)?;
+            resize_out.send(width as u32)?;
             draw_resize_out.send(width)?;
         }
 

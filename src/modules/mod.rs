@@ -1,6 +1,7 @@
 use toml::Value;
 use std::error::Error;
 use image::DynamicImage;
+use std::sync::mpsc::Sender;
 use std::collections::HashMap;
 
 use parse_input::Config;
@@ -19,5 +20,6 @@ lazy_static! {
 }
 
 pub trait Block: Send + 'static {
+    fn start_interval(&self, Sender<Option<u32>>);
     fn render(&mut self) -> Result<DynamicImage, Box<Error>>;
 }

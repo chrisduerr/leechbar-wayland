@@ -1,6 +1,7 @@
 use std::cmp;
 use toml::Value;
 use std::error::Error;
+use std::sync::mpsc::Sender;
 use rusttype::{Font, Scale, point, PositionedGlyph};
 use image::{DynamicImage, GenericImage, Rgba, Pixel};
 
@@ -40,6 +41,10 @@ impl TextBlock {
 }
 
 impl Block for TextBlock {
+    fn start_interval(&self, _interval_out: Sender<Option<u32>>) {
+        // TextBlock is never updated
+    }
+
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
         if let Some(ref cache) = self.cache {
             return Ok(cache.clone());

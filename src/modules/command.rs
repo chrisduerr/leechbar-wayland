@@ -1,8 +1,11 @@
 use std::cmp;
+use std::thread;
 use toml::Value;
 use rusttype::Font;
 use std::error::Error;
+use std::time::Duration;
 use std::process::Command;
+use std::sync::mpsc::Sender;
 use image::{DynamicImage, Rgba};
 
 use modules::Block;
@@ -18,6 +21,7 @@ pub struct CommandBlock {
     pub width: u32,
     pub spacing: u32,
     pub command: String,
+    pub interval: u32,
 }
 
 // Unwraps cannot fail
@@ -35,11 +39,24 @@ impl CommandBlock {
             width: config.width,
             spacing: config.spacing,
             command: command.to_owned(),
+            interval: config.interval,
         }))
     }
 }
 
 impl Block for CommandBlock {
+    fn start_interval(&self, interval_out: Sender<Option<u32>>) {
+        if self.interval > 0 {
+            let interval = self.interval as u64;
+            thread::spawn(move || {
+                loop {
+                    thread::sleep(Duration::from_millis(interval));
+                    interval_out.send(None).unwrap(); // TODO: Not unwrap?
+                }
+            });
+        }
+    }
+
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
         let output = Command::new("sh").arg("-c").arg(&self.command).output()?;
         let text = String::from_utf8_lossy(&output.stdout);

@@ -11,14 +11,23 @@ use modules::Block;
 use parse_input::{self, Config};
 
 pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
-                         resize_in: Receiver<i32>)
+                         resize_in: Receiver<u32>)
                          -> Result<(), Box<Error>> {
     let mut output_width = 0;
     let (combined_out, combined_in) = channel();
 
     let mut config = parse_input::read_config()?;
-    // TODO: Start scheduler for every blockable
 
+    // Start interval notification callback for every block
+    // This will spawn threads inside the start_interval methods
+    for element in config.left_blocks
+        .iter()
+        .chain(config.center_blocks.iter())
+        .chain(config.right_blocks.iter()) {
+        element.start_interval(combined_out.clone());
+    }
+
+    // Combine interval with output_width
     {
         let combined_out = combined_out.clone();
         thread::spawn(move || {
@@ -38,7 +47,7 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
                 }
 
                 if output_width > 0 {
-                    let bar_img = create_bar_from_config(&mut config, output_width as u32)?;
+                    let bar_img = create_bar_from_config(&mut config, output_width)?;
                     bar_img_out.send((img_to_file(bar_img)?, config.bar_height as i32))?;
                 }
             }
