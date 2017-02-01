@@ -57,6 +57,7 @@ pub fn read_config() -> Result<Config, Box<Error>> {
     let mut config_buf = String::new();
     let mut config_file = File::open(format!("{}/.config/leechbar/config.toml", get_home_dir()?))?;
     config_file.read_to_string(&mut config_buf)?;
+    config_buf = config_buf.replace("\\", "\\\\"); // Escape escape characters in config file
     let config_val: toml::Value = config_buf.parse().map_err(|_| "Unable to parse config.")?;
 
     Ok(parse_settings(&config_val)?)

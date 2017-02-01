@@ -57,6 +57,7 @@ impl Block for CommandBlock {
         }
     }
 
+    // TODO: Implement caching for Command
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
         let output = Command::new("sh").arg("-c").arg(&self.command).output()?;
         let text = String::from_utf8_lossy(&output.stdout);
