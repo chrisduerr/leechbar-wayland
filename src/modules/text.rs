@@ -6,6 +6,7 @@ use rusttype::{Font, Scale, point, PositionedGlyph};
 use image::{DynamicImage, GenericImage, Rgba, Pixel};
 
 use modules::Block;
+use mouse::MouseEvent;
 use parse_input::Config;
 
 pub struct TextBlock {
@@ -41,8 +42,21 @@ impl TextBlock {
 }
 
 impl Block for TextBlock {
-    fn start_interval(&self, _interval_out: Sender<Option<u32>>) {
+    fn start_interval(&self, _interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
         // TextBlock is never updated
+    }
+
+    fn mouse_event(&self, mouse_event: MouseEvent) -> bool {
+        // TODO!!!
+        println!("TODO: Text Mouse Event! {}-{}",
+                 mouse_event.x,
+                 mouse_event.y);
+
+        if mouse_event.state.is_some() {
+            println!("CLICK");
+        }
+
+        false
     }
 
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {

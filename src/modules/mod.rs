@@ -5,6 +5,7 @@ use std::sync::mpsc::Sender;
 use std::collections::HashMap;
 
 use parse_input::Config;
+use mouse::MouseEvent;
 
 mod text;
 mod command;
@@ -20,6 +21,7 @@ lazy_static! {
 }
 
 pub trait Block: Send + 'static {
-    fn start_interval(&self, Sender<Option<u32>>);
+    fn start_interval(&self, Sender<(Option<u32>, Option<MouseEvent>)>);
     fn render(&mut self) -> Result<DynamicImage, Box<Error>>;
+    fn mouse_event(&self, MouseEvent) -> bool;
 }

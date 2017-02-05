@@ -5,23 +5,26 @@ use rusttype::Font;
 use std::error::Error;
 use std::time::Duration;
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Sender;
 use image::{DynamicImage, Rgba};
 
 use modules::Block;
+use mouse::MouseEvent;
 use parse_input::Config;
 use modules::text::TextBlock;
 
 pub struct CommandBlock {
-    pub bar_height: u32,
-    pub font_height: u32,
-    pub font: Font<'static>,
-    pub bg_col: DynamicImage,
-    pub fg_col: Rgba<u8>,
-    pub width: u32,
-    pub spacing: u32,
-    pub command: String,
-    pub interval: u32,
+    bar_height: u32,
+    font_height: u32,
+    font: Font<'static>,
+    bg_col: DynamicImage,
+    fg_col: Rgba<u8>,
+    width: u32,
+    spacing: u32,
+    command: String,
+    interval: u32,
+    cache: Arc<Mutex<Option<DynamicImage>>>,
 }
 
 // Unwraps cannot fail
@@ -40,25 +43,46 @@ impl CommandBlock {
             spacing: config.spacing,
             command: command.to_owned(),
             interval: config.interval,
+            cache: Arc::new(Mutex::new(None)),
         }))
     }
 }
 
 impl Block for CommandBlock {
-    fn start_interval(&self, interval_out: Sender<Option<u32>>) {
+    fn start_interval(&self, interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
         if self.interval > 0 {
             let interval = self.interval as u64;
+            let cache = self.cache.clone();
             thread::spawn(move || {
                 loop {
                     thread::sleep(Duration::from_millis(interval));
-                    interval_out.send(None).unwrap(); // TODO: Not unwrap?
+                    let mut cache_lock = cache.lock().unwrap(); // TODO: Not unwrap?
+                    *cache_lock = None;
+                    interval_out.send((None, None)).unwrap(); // TODO: Not unwrap?
                 }
             });
         }
     }
 
-    // TODO: Implement caching for Command
+    fn mouse_event(&self, mouse_event: MouseEvent) -> bool {
+        // TODO!!!
+        println!("TODO: Command Mouse Event! {}-{}",
+                 mouse_event.x,
+                 mouse_event.y);
+
+        if mouse_event.state.is_some() {
+            println!("CLICK");
+        }
+
+        false
+    }
+
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
+        let mut cache = self.cache.lock().map_err(|e| e.to_string())?;
+        if let Some(ref cache) = *cache {
+            return Ok(cache.clone());
+        }
+
         let output = Command::new("sh").arg("-c").arg(&self.command).output()?;
         let text = String::from_utf8_lossy(&output.stdout);
 
@@ -74,6 +98,8 @@ impl Block for CommandBlock {
             cache: None,
         };
 
-        text_block.render()
+        let image = text_block.render()?;
+        *cache = Some(image.clone());
+        Ok(image)
     }
 }

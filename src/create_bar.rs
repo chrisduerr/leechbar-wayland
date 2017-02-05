@@ -8,10 +8,12 @@ use std::sync::mpsc::{Sender, Receiver, channel};
 use image::{GenericImage, Pixel, DynamicImage, FilterType};
 
 use modules::Block;
+use mouse::MouseEvent;
 use parse_input::{self, Config};
 
 pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
-                         resize_in: Receiver<u32>)
+                         resize_in: Receiver<u32>,
+                         mouse_in: Receiver<MouseEvent>)
                          -> Result<(), Box<Error>> {
     let mut output_width = 0;
     let (combined_out, combined_in) = channel();
@@ -32,7 +34,19 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
         let combined_out = combined_out.clone();
         thread::spawn(move || {
             while let Ok(output_width) = resize_in.recv() {
-                if combined_out.send(Some(output_width)).is_err() {
+                if combined_out.send((Some(output_width), None)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    // Add mouse events to combined channel
+    {
+        let combined_out = combined_out.clone();
+        thread::spawn(move || {
+            while let Ok(event) = mouse_in.recv() {
+                if combined_out.send((None, Some(event))).is_err() {
                     break;
                 }
             }
@@ -41,9 +55,13 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
 
     loop {
         match combined_in.recv() {
-            Ok(combined) => {
-                if let Some(width) = combined {
+            Ok((width, mouse_event)) => {
+                if let Some(width) = width {
                     output_width = width;
+                } else if let Some(mouse_event) = mouse_event {
+                    if !propagate_mouse_events(&mut config, output_width, mouse_event)? {
+                        continue;
+                    }
                 }
 
                 if output_width > 0 {
@@ -54,6 +72,61 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
             Err(_) => Err("Config or Resize channel disconnected.".to_owned())?,
         };
     }
+}
+
+fn propagate_mouse_events(config: &mut Config,
+                          bar_width: u32,
+                          mouse_event: MouseEvent)
+                          -> Result<bool, Box<Error>> {
+    let event_x = mouse_event.x as u32;
+
+    let last_left_block_index = config.left_blocks.len();
+    let last_center_block_index = last_left_block_index + config.center_blocks.len();
+
+    let center_images = render_blocks(&mut config.center_blocks)?;
+    let right_images = render_blocks(&mut config.right_blocks)?;
+
+    let center_blocks_width: u32 = center_images.iter().map(|i| i.width()).sum();
+    let center_offset_x = bar_width / 2 - center_blocks_width / 2;
+
+    let right_blocks_width: u32 = right_images.iter().map(|i| i.width()).sum();
+    let right_offset_x = bar_width - right_blocks_width;
+
+    let mut offset = 0;
+    for (i, block) in config.left_blocks
+        .iter_mut()
+        .enumerate()
+        .chain(config.center_blocks
+            .iter_mut()
+            .enumerate()
+            .map(|(i, b)| (i + last_left_block_index, b)))
+        .chain(config.right_blocks
+            .iter_mut()
+            .enumerate()
+            .map(|(i, b)| (i + last_center_block_index, b))) {
+        let image = block.render()?;
+        let block_right = offset + image.width();
+
+        if event_x > offset && event_x < block_right {
+            return Ok(block.mouse_event(mouse_event));
+        }
+
+        if i == last_left_block_index - 1 {
+            offset = center_offset_x;
+        } else if i == last_center_block_index - 1 {
+            offset = right_offset_x;
+        } else {
+            offset += block_right;
+        }
+    }
+
+    Ok(false)
+}
+
+fn render_blocks(blocks: &mut [Box<Block>]) -> Result<Vec<DynamicImage>, Box<Error>> {
+    Ok(blocks.iter_mut()
+        .map(|block| block.render())
+        .collect::<Result<Vec<DynamicImage>, Box<Error>>>()?)
 }
 
 fn create_bar_from_config(config: &mut Config, bar_width: u32) -> Result<DynamicImage, Box<Error>> {
@@ -82,9 +155,7 @@ fn combine_elements(blocks: &mut [Box<Block>],
     if blocks.is_empty() {
         Ok(None)
     } else {
-        let images = blocks.iter_mut()
-            .map(|block| block.render())
-            .collect::<Result<Vec<DynamicImage>, Box<Error>>>()?;
+        let images = render_blocks(blocks)?;
         let width = images.iter().map(|img| img.width()).sum();
         let mut result_img = DynamicImage::new_rgba8(width, bar_height);
 

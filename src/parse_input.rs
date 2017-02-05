@@ -17,14 +17,14 @@ pub struct Config {
     pub fg: Rgba<u8>,
     pub font: Option<Font<'static>>,
     pub font_height: Option<u32>,
-    pub resize: bool,
+    pub resize: bool, // TODO: Currently never used by anything
     pub width: u32,
     pub spacing: u32,
     pub interval: u32,
 
     // Exclusive to bar:
     pub bar_height: u32,
-    pub top: bool,
+    pub top: bool, // TODO: Currently not implemented in Wayland
     pub left_blocks: Vec<Box<Block>>,
     pub center_blocks: Vec<Box<Block>>,
     pub right_blocks: Vec<Box<Block>>,
@@ -97,6 +97,7 @@ fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<Error>> {
 
 // Creates a Block from a toml field
 // Depending on "is_config" it raises errors if certain fields are missing
+// TODO: Fall back to already existing values instead of using fallback.fg etc
 fn block_from_toml(general_val: &toml::Value, fallback: &Config) -> Result<Config, Box<Error>> {
     let mut config = fallback.clone();
 

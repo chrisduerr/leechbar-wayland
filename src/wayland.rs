@@ -1,12 +1,14 @@
+use std::env;
 use std::thread;
 use std::fs::File;
 use std::error::Error;
 use std::os::unix::io::AsRawFd;
 use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError};
-use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult};
+use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult, cursor};
 use wayland_client::protocol::{wl_compositor, wl_shell, wl_shm, wl_shell_surface, wl_seat,
                                wl_pointer, wl_surface, wl_output, wl_display, wl_registry};
 
+use mouse::MouseEvent;
 use self::generated::client::desktop_shell;
 
 mod generated {
@@ -42,6 +44,28 @@ wayland_env!(WaylandEnv,
 
 struct EventHandler {
     event_out: Sender<i32>,
+    mouse_out: Sender<MouseEvent>,
+    cursor_theme: cursor::CursorTheme,
+    cursor_surface: wl_surface::WlSurface,
+    last_x: f64,
+    last_y: f64,
+}
+
+impl EventHandler {
+    fn new(event_out: Sender<i32>,
+           mouse_out: Sender<MouseEvent>,
+           cursor_theme: cursor::CursorTheme,
+           cursor_surface: wl_surface::WlSurface)
+           -> Result<EventHandler, Box<Error>> {
+        Ok(EventHandler {
+            event_out: event_out,
+            mouse_out: mouse_out,
+            cursor_theme: cursor_theme,
+            cursor_surface: cursor_surface,
+            last_x: 0f64,
+            last_y: 0f64,
+        })
+    }
 }
 
 impl wl_shell_surface::Handler for EventHandler {
@@ -57,15 +81,50 @@ declare_handler!(EventHandler,
                  wl_shell_surface::WlShellSurface);
 
 impl wl_pointer::Handler for EventHandler {
-    // TODO: Mouse Events not needed yet.
+    fn motion(&mut self,
+              _evqh: &mut EventQueueHandle,
+              _proxy: &wl_pointer::WlPointer,
+              _time: u32,
+              surface_x: f64,
+              surface_y: f64) {
+        self.last_x = surface_x;
+        self.last_y = surface_y;
+
+        let _ = self.mouse_out.send(MouseEvent {
+            button: None,
+            state: None,
+            x: surface_x,
+            y: surface_y,
+        });
+    }
+
+    fn button(&mut self,
+              _evqh: &mut EventQueueHandle,
+              _proxy: &wl_pointer::WlPointer,
+              _serial: u32,
+              _time: u32,
+              button: u32,
+              state: wl_pointer::ButtonState) {
+        let _ = self.mouse_out.send(MouseEvent {
+            button: Some(button),
+            state: Some(state),
+            x: self.last_x,
+            y: self.last_y,
+        });
+    }
+
     fn enter(&mut self,
              _evqh: &mut EventQueueHandle,
-             _proxy: &wl_pointer::WlPointer,
-             _serial: u32,
+             proxy: &wl_pointer::WlPointer,
+             serial: u32,
              _surface: &wl_surface::WlSurface,
              _surface_x: f64,
              _surface_y: f64) {
-        println!("Mouse Entered Bar!");
+        let cursor = self.cursor_theme.get_cursor("left_ptr").unwrap();
+        let cursor_buffer = cursor.frame_buffer(0).unwrap();
+        self.cursor_surface.attach(Some(&cursor_buffer), 0, 0);
+        self.cursor_surface.commit();
+        proxy.set_cursor(serial, Some(&self.cursor_surface), 0, 0);
     }
 }
 
@@ -85,7 +144,8 @@ impl wl_output::Handler for EventHandler {
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
 
 pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
-                           resize_out: Sender<u32>)
+                           resize_out: Sender<u32>,
+                           mouse_out: Sender<MouseEvent>)
                            -> Result<(), Box<Error>> {
     let (display, mut event_queue) = match wayland_client::default_connect() {
         Ok(ret) => ret,
@@ -97,7 +157,7 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
     event_queue.register::<_, EnvHandler<WaylandEnv>>(&registry, 0);
     event_queue.sync_roundtrip()?;
 
-    let (shell_surface, pointer, surface, output) = {
+    let (shell_surface, pointer, surface, output, cursor_surface, cursor_theme) = {
         let state = event_queue.state();
         let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
 
@@ -111,19 +171,24 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
         // Make DesktopShell surface a bar
         env.desktop_shell.set_panel(&env.output, &surface);
 
+        // Create a surface for the cursor
+        let cursor_surface = request_result_to_result(env.compositor.create_surface(),
+                                                      "Compositor already destroyed.")?;
+        let cursor_theme = load_cursor_theme(&env.shm);
+
         // Export output for registering an event handler later
         let output: wl_output::WlOutput = reexport(env, &registry, "wl_output")?;
 
-        (shell_surface, pointer, surface, output)
+        (shell_surface, pointer, surface, output, cursor_surface, cursor_theme)
     };
 
     let (event_out, event_in) = channel();
 
-    event_queue.add_handler(EventHandler { event_out: event_out });
+    event_queue.add_handler(EventHandler::new(event_out, mouse_out, cursor_theme, cursor_surface)?);
+
     event_queue.register::<_, EventHandler>(&pointer, 1);
     event_queue.register::<_, EventHandler>(&shell_surface, 1);
     event_queue.register::<_, EventHandler>(&output, 1);
-
 
     let (draw_resize_out, draw_resize_in) = channel();
     {
@@ -193,6 +258,13 @@ fn draw_bar(bar_img: &File,
     let _ = display.flush();
 
     Ok(())
+}
+
+fn load_cursor_theme(shm: &wl_shm::WlShm) -> cursor::CursorTheme {
+    let name = env::var("SWAY_CURSOR_THEME").unwrap_or_else(|_| String::from("default"));
+    let size = env::var("SWAY_CURSOR_SIZE").unwrap_or_else(|_| String::from("16"));
+    let size = size.parse().unwrap_or(16);
+    cursor::load_theme(Some(&name), size, shm)
 }
 
 fn reexport<T: wayland_client::Proxy>(env: &EnvHandler<WaylandEnv>,
