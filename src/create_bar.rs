@@ -76,7 +76,7 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
 
 fn propagate_mouse_events(config: &mut Config,
                           bar_width: u32,
-                          mouse_event: MouseEvent)
+                          mut mouse_event: MouseEvent)
                           -> Result<bool, Box<Error>> {
     let event_x = mouse_event.x as u32;
 
@@ -107,7 +107,8 @@ fn propagate_mouse_events(config: &mut Config,
         let image = block.render()?;
         let block_right = offset + image.width();
 
-        if event_x > offset && event_x < block_right {
+        if event_x >= offset && event_x <= block_right {
+            mouse_event.x = mouse_event.x - offset as f64;
             return Ok(block.mouse_event(mouse_event));
         }
 
