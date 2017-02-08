@@ -113,6 +113,19 @@ impl wl_pointer::Handler for EventHandler {
         });
     }
 
+    fn leave(&mut self,
+             _evqh: &mut EventQueueHandle,
+             _proxy: &wl_pointer::WlPointer,
+             _serial: u32,
+             _surface: &wl_surface::WlSurface) {
+        let _ = self.mouse_out.send(MouseEvent {
+            button: None,
+            state: None,
+            x: -1f64,
+            y: -1f64,
+        });
+    }
+
     fn enter(&mut self,
              _evqh: &mut EventQueueHandle,
              proxy: &wl_pointer::WlPointer,

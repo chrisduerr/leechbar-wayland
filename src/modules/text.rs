@@ -7,7 +7,7 @@ use image::{DynamicImage, GenericImage, Rgba, Pixel};
 
 use modules::Block;
 use mouse::MouseEvent;
-use parse_input::Config;
+use parse_input::{self, Config};
 
 pub struct TextBlock {
     pub bar_height: u32,
@@ -19,6 +19,9 @@ pub struct TextBlock {
     pub width: u32,
     pub spacing: u32,
     pub cache: Option<DynamicImage>,
+    pub hover_bg_col: DynamicImage,
+    pub hover_fg_col: Rgba<u8>,
+    pub hover: bool,
 }
 
 // Unwraps cannot fail
@@ -27,6 +30,18 @@ impl TextBlock {
         let text = value.lookup("text").ok_or("Could not find text in a text module.")?;
         let text = text.as_str().ok_or("Text in text module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
+
+        // Read Hover values from toml
+        let mut hover_bg_col = config.bg.clone();
+        let mut hover_fg_col = config.fg;
+
+        if let Some(hover_table) = value.lookup("hover") {
+            hover_bg_col = parse_input::toml_value_to_image(&hover_table, "bg")
+                .unwrap_or(hover_bg_col);
+            hover_fg_col = parse_input::toml_value_to_rgba(&hover_table, "fg")
+                .unwrap_or(hover_fg_col);
+        }
+
         Ok(Box::new(TextBlock {
             bar_height: config.bar_height,
             font_height: font_height,
@@ -37,31 +52,38 @@ impl TextBlock {
             width: config.width,
             spacing: config.spacing,
             cache: None,
+            hover_bg_col: hover_bg_col,
+            hover_fg_col: hover_fg_col,
+            hover: false,
         }))
     }
 }
 
 impl Block for TextBlock {
-    fn start_interval(&self, _interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
+    fn start_interval(&mut self, _interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
         // TextBlock is never updated
     }
 
-    fn mouse_event(&self, mouse_event: MouseEvent) -> bool {
-        // TODO!!!
-        println!("TODO: Text Mouse Event! {}-{}",
-                 mouse_event.x,
-                 mouse_event.y);
-
-        if mouse_event.state.is_some() {
-            println!("CLICK");
+    fn mouse_event(&mut self, mouse_event: Option<MouseEvent>) -> bool {
+        if self.hover != mouse_event.is_some() {
+            self.cache = None;
+            self.hover = mouse_event.is_some();
+            true
+        } else {
+            false
         }
-
-        false
     }
 
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
         if let Some(ref cache) = self.cache {
             return Ok(cache.clone());
+        }
+
+        let mut bg_col = &self.bg_col;
+        let mut fg_col = &self.fg_col;
+        if self.hover {
+            bg_col = &self.hover_bg_col;
+            fg_col = &self.hover_fg_col;
         }
 
         let text = self.text.replace('\n', "").replace('\r', "").replace('\t', "");
@@ -100,9 +122,9 @@ impl Block for TextBlock {
         let mut image = DynamicImage::new_rgba8(width, self.bar_height);
         for x in 0..width {
             for y in 0..self.bar_height {
-                let bgcol_x = x % self.bg_col.width();
-                let bgcol_y = y % self.bg_col.height();
-                image.put_pixel(x, y, self.bg_col.get_pixel(bgcol_x, bgcol_y));
+                let bgcol_x = x % bg_col.width();
+                let bgcol_y = y % bg_col.height();
+                image.put_pixel(x, y, bg_col.get_pixel(bgcol_x, bgcol_y));
             }
         }
 
@@ -113,7 +135,7 @@ impl Block for TextBlock {
                     let x = x + bb.min.x as u32;
                     let y = y + bb.min.y as u32;
                     let mut current_pixel = image.get_pixel(x + x_offset, y + y_offset);
-                    let mut pixel_col = self.fg_col;
+                    let mut pixel_col = *fg_col;
                     pixel_col.data[3] = (v * 255.0) as u8;
                     current_pixel.blend(&pixel_col);
                     image.put_pixel(x + x_offset, y + y_offset, current_pixel);

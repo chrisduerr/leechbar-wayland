@@ -21,7 +21,13 @@ lazy_static! {
 }
 
 pub trait Block: Send + 'static {
-    fn start_interval(&self, Sender<(Option<u32>, Option<MouseEvent>)>);
+    // Used to start notifier for bar updates
+    fn start_interval(&mut self, Sender<(Option<u32>, Option<MouseEvent>)>);
+
+    // Used to render the settings into an Image Block
     fn render(&mut self) -> Result<DynamicImage, Box<Error>>;
-    fn mouse_event(&self, MouseEvent) -> bool;
+
+    // Used to update the settings based on mouse focus
+    // Return true if it requires redraw
+    fn mouse_event(&mut self, Option<MouseEvent>) -> bool;
 }

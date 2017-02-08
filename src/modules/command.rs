@@ -49,7 +49,7 @@ impl CommandBlock {
 }
 
 impl Block for CommandBlock {
-    fn start_interval(&self, interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
+    fn start_interval(&mut self, interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
         if self.interval > 0 {
             let interval = self.interval as u64;
             let cache = self.cache.clone();
@@ -64,16 +64,8 @@ impl Block for CommandBlock {
         }
     }
 
-    fn mouse_event(&self, mouse_event: MouseEvent) -> bool {
+    fn mouse_event(&mut self, _mouse_event: Option<MouseEvent>) -> bool {
         // TODO!!!
-        println!("TODO: Command Mouse Event! {}-{}",
-                 mouse_event.x,
-                 mouse_event.y);
-
-        if mouse_event.state.is_some() {
-            println!("CLICK");
-        }
-
         false
     }
 
@@ -96,6 +88,9 @@ impl Block for CommandBlock {
             width: self.width,
             spacing: self.spacing,
             cache: None,
+            hover_bg_col: self.bg_col.clone(),
+            hover_fg_col: self.fg_col,
+            hover: false,
         };
 
         let image = text_block.render()?;

@@ -23,9 +23,9 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
     // Start interval notification callback for every block
     // This will spawn threads inside the start_interval methods
     for element in config.left_blocks
-        .iter()
-        .chain(config.center_blocks.iter())
-        .chain(config.right_blocks.iter()) {
+        .iter_mut()
+        .chain(config.center_blocks.iter_mut())
+        .chain(config.right_blocks.iter_mut()) {
         element.start_interval(combined_out.clone());
     }
 
@@ -92,6 +92,8 @@ fn propagate_mouse_events(config: &mut Config,
     let right_blocks_width: u32 = right_images.iter().map(|i| i.width()).sum();
     let right_offset_x = bar_width - right_blocks_width;
 
+    let mut redraw = false;
+
     let mut offset = 0;
     for (i, block) in config.left_blocks
         .iter_mut()
@@ -109,7 +111,13 @@ fn propagate_mouse_events(config: &mut Config,
 
         if event_x >= offset && event_x <= block_right {
             mouse_event.x = mouse_event.x - offset as f64;
-            return Ok(block.mouse_event(mouse_event));
+            if block.mouse_event(Some(mouse_event.clone())) {
+                redraw = true;
+            }
+        } else {
+            if block.mouse_event(None) {
+                redraw = true;
+            }
         }
 
         if i == last_left_block_index - 1 {
@@ -121,7 +129,7 @@ fn propagate_mouse_events(config: &mut Config,
         }
     }
 
-    Ok(false)
+    Ok(redraw)
 }
 
 fn render_blocks(blocks: &mut [Box<Block>]) -> Result<Vec<DynamicImage>, Box<Error>> {

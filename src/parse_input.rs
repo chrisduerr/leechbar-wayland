@@ -147,30 +147,32 @@ fn toml_value_to_blocks(general_val: &toml::Value,
     Ok(blocks)
 }
 
-fn toml_value_to_bool(general_val: &toml::Value, name: &str) -> Result<bool, String> {
+pub fn toml_value_to_bool(general_val: &toml::Value, name: &str) -> Result<bool, String> {
     let value = general_val.lookup(name)
         .ok_or_else(|| format!("Could not find toml value {}.", name))?;
     Ok(value.as_bool().ok_or("Toml value not an integer.")?)
 }
 
-fn toml_value_to_integer(general_val: &toml::Value, name: &str) -> Result<u32, String> {
+pub fn toml_value_to_integer(general_val: &toml::Value, name: &str) -> Result<u32, String> {
     let value = general_val.lookup(name)
         .ok_or_else(|| format!("Could not find toml value {}.", name))?;
     Ok(value.as_integer().ok_or("Toml value not an integer.")? as u32)
 }
 
-fn toml_value_to_string(general_val: &toml::Value, name: &str) -> Result<String, String> {
+pub fn toml_value_to_string(general_val: &toml::Value, name: &str) -> Result<String, String> {
     let value = general_val.lookup(name)
         .ok_or_else(|| format!("Could not find toml value {}.", name))?;
     Ok(value.as_str().ok_or("Toml value not a string.")?.to_owned())
 }
 
-fn toml_value_to_rgba(general_val: &toml::Value, name: &str) -> Result<Rgba<u8>, Box<Error>> {
+pub fn toml_value_to_rgba(general_val: &toml::Value, name: &str) -> Result<Rgba<u8>, Box<Error>> {
     let col_string = toml_value_to_string(general_val, name)?;
     Ok(string_to_rgba(&col_string)?)
 }
 
-fn toml_value_to_image(general_val: &toml::Value, name: &str) -> Result<DynamicImage, Box<Error>> {
+pub fn toml_value_to_image(general_val: &toml::Value,
+                           name: &str)
+                           -> Result<DynamicImage, Box<Error>> {
     let path = toml_value_to_string(general_val, name)?;
 
     if path.starts_with('#') {
@@ -188,7 +190,9 @@ fn toml_value_to_image(general_val: &toml::Value, name: &str) -> Result<DynamicI
 }
 
 // Uses string as path to load a font file
-fn toml_value_to_font(general_val: &toml::Value, name: &str) -> Result<Font<'static>, Box<Error>> {
+pub fn toml_value_to_font(general_val: &toml::Value,
+                          name: &str)
+                          -> Result<Font<'static>, Box<Error>> {
     let home = get_home_dir()?;
     let font_string =
         toml_value_to_string(general_val, name)?.replace("$", &home).replace("~", &home);
