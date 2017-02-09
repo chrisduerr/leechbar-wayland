@@ -3,7 +3,7 @@ use std::thread;
 use std::fs::File;
 use std::error::Error;
 use std::os::unix::io::AsRawFd;
-use std::sync::mpsc::{Receiver, Sender, channel, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender};
 use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult, cursor};
 use wayland_client::protocol::{wl_compositor, wl_shell, wl_shm, wl_shell_surface, wl_seat,
                                wl_pointer, wl_surface, wl_output, wl_display, wl_registry};
@@ -43,7 +43,7 @@ wayland_env!(WaylandEnv,
              shm: wl_shm::WlShm);
 
 struct EventHandler {
-    event_out: Sender<i32>,
+    resize_out: Sender<u32>,
     mouse_out: Sender<MouseEvent>,
     cursor_theme: cursor::CursorTheme,
     cursor_surface: wl_surface::WlSurface,
@@ -52,13 +52,13 @@ struct EventHandler {
 }
 
 impl EventHandler {
-    fn new(event_out: Sender<i32>,
+    fn new(resize_out: Sender<u32>,
            mouse_out: Sender<MouseEvent>,
            cursor_theme: cursor::CursorTheme,
            cursor_surface: wl_surface::WlSurface)
            -> Result<EventHandler, Box<Error>> {
         Ok(EventHandler {
-            event_out: event_out,
+            resize_out: resize_out,
             mouse_out: mouse_out,
             cursor_theme: cursor_theme,
             cursor_surface: cursor_surface,
@@ -151,7 +151,7 @@ impl wl_output::Handler for EventHandler {
             width: i32,
             _height: i32,
             _refresh: i32) {
-        let _ = self.event_out.send(width);
+        let _ = self.resize_out.send(width as u32);
     }
 }
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
@@ -195,51 +195,40 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
         (shell_surface, pointer, surface, output, cursor_surface, cursor_theme)
     };
 
-    let (event_out, event_in) = channel();
+    event_queue.add_handler(EventHandler::new(resize_out, mouse_out, cursor_theme, cursor_surface)?);
 
-    event_queue.add_handler(EventHandler::new(event_out, mouse_out, cursor_theme, cursor_surface)?);
-
-    event_queue.register::<_, EventHandler>(&pointer, 1);
     event_queue.register::<_, EventHandler>(&shell_surface, 1);
+    event_queue.register::<_, EventHandler>(&pointer, 1);
     event_queue.register::<_, EventHandler>(&output, 1);
 
-    let (draw_resize_out, draw_resize_in) = channel();
     {
         let state = event_queue.state();
         let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
         let shm = reexport(env, &registry, "wl_shm")?;
 
+        let mut wlc_unbugged = false;
         thread::spawn(move || {
-            let mut output_width = 0;
             while let Ok((bar_img, bar_height)) = bar_img_in.recv() {
-                while let Ok(width) = draw_resize_in.try_recv() {
-                    output_width = width;
+                let output_width = match bar_img.metadata() {
+                    Ok(meta) => meta.len() as i32 / bar_height / 4,
+                    _ => 0,
+                };
+
+                if output_width > 0 {
+                    let _ = draw_bar(&bar_img, &shm, &surface, &display, output_width, bar_height);
                 }
 
-                if let Err(TryRecvError::Disconnected) = draw_resize_in.try_recv() {
-                    break;
-                }
-
-                if output_width > 0 &&
-                   draw_bar(&bar_img, &shm, &surface, &display, output_width, bar_height).is_err() {
-                    break;
+                if !wlc_unbugged {
+                    surface.commit();
+                    wlc_unbugged = true;
                 }
             }
         });
     }
 
+    // Dispatch all Wayland Events until the end of Dawn
     loop {
-        // TODO: Fix SHM buffer error when resizing sometimes
         event_queue.dispatch()?;
-
-        while let Ok(width) = event_in.try_recv() {
-            resize_out.send(width as u32)?;
-            draw_resize_out.send(width)?;
-        }
-
-        if let Err(TryRecvError::Disconnected) = event_in.try_recv() {
-            Err("Wayland event channel disconnected".to_owned())?;
-        };
     }
 }
 

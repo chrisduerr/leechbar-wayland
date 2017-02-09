@@ -110,14 +110,12 @@ fn propagate_mouse_events(config: &mut Config,
         let block_right = offset + image.width();
 
         if event_x >= offset && event_x <= block_right {
-            mouse_event.x = mouse_event.x - offset as f64;
+            mouse_event.x -= offset as f64;
             if block.mouse_event(Some(mouse_event.clone())) {
                 redraw = true;
             }
-        } else {
-            if block.mouse_event(None) {
-                redraw = true;
-            }
+        } else if block.mouse_event(None) {
+            redraw = true;
         }
 
         if i == last_left_block_index - 1 {

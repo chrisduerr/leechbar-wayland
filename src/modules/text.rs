@@ -36,9 +36,9 @@ impl TextBlock {
         let mut hover_fg_col = config.fg;
 
         if let Some(hover_table) = value.lookup("hover") {
-            hover_bg_col = parse_input::toml_value_to_image(&hover_table, "bg")
+            hover_bg_col = parse_input::toml_value_to_image(hover_table, "bg")
                 .unwrap_or(hover_bg_col);
-            hover_fg_col = parse_input::toml_value_to_rgba(&hover_table, "fg")
+            hover_fg_col = parse_input::toml_value_to_rgba(hover_table, "fg")
                 .unwrap_or(hover_fg_col);
         }
 
@@ -79,12 +79,16 @@ impl Block for TextBlock {
             return Ok(cache.clone());
         }
 
-        let mut bg_col = &self.bg_col;
-        let mut fg_col = &self.fg_col;
-        if self.hover {
-            bg_col = &self.hover_bg_col;
-            fg_col = &self.hover_fg_col;
-        }
+        let bg_col = if self.hover {
+            &self.hover_bg_col
+        } else {
+            &self.bg_col
+        };
+        let fg_col = if self.hover {
+            &self.hover_fg_col
+        } else {
+            &self.fg_col
+        };
 
         let text = self.text.replace('\n', "").replace('\r', "").replace('\t', "");
 
