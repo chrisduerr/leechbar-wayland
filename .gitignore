@@ -1,4 +1,4 @@
 target
-testbar
 *.png
 font.ttf
+*.sh
