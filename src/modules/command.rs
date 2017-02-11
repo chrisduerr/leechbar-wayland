@@ -8,11 +8,12 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Sender;
 use image::{DynamicImage, Rgba};
+use wayland_client::protocol::wl_pointer::ButtonState;
 
 use modules::Block;
 use mouse::MouseEvent;
-use parse_input::Config;
 use modules::text::TextBlock;
+use parse_input::{self, Config};
 
 pub struct CommandBlock {
     bar_height: u32,
@@ -25,6 +26,10 @@ pub struct CommandBlock {
     command: String,
     interval: u32,
     cache: Arc<Mutex<Option<DynamicImage>>>,
+    hover_bg_col: DynamicImage,
+    hover_fg_col: Rgba<u8>,
+    click_command: Option<String>,
+    hover: bool,
 }
 
 // Unwraps cannot fail
@@ -33,6 +38,20 @@ impl CommandBlock {
         let command = value.lookup("command").ok_or("Could not find command in a command module.")?;
         let command = command.as_str().ok_or("Command in command module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
+
+        // Read mouse values from toml
+        let mut hover_bg_col = config.bg.clone();
+        let mut hover_fg_col = config.fg;
+        let mut click_command = None;
+
+        if let Some(hover_table) = value.lookup("mouse") {
+            hover_bg_col = parse_input::toml_value_to_image(hover_table, "hover_bg")
+                .unwrap_or(hover_bg_col);
+            hover_fg_col = parse_input::toml_value_to_rgba(hover_table, "hover_fg")
+                .unwrap_or(hover_fg_col);
+            click_command = parse_input::toml_value_to_string(hover_table, "command").ok();
+        }
+
         Ok(Box::new(CommandBlock {
             bar_height: config.bar_height,
             font_height: font_height,
@@ -44,6 +63,10 @@ impl CommandBlock {
             command: command.to_owned(),
             interval: config.interval,
             cache: Arc::new(Mutex::new(None)),
+            hover_bg_col: hover_bg_col,
+            hover_fg_col: hover_fg_col,
+            click_command: click_command,
+            hover: false,
         }))
     }
 }
@@ -64,8 +87,22 @@ impl Block for CommandBlock {
         }
     }
 
-    fn mouse_event(&mut self, _mouse_event: Option<MouseEvent>) -> bool {
-        // TODO!!!
+    fn mouse_event(&mut self, mouse_event: Option<MouseEvent>) -> bool {
+        if let Some(ref mouse_event) = mouse_event {
+            if let Some(ButtonState::Released) = mouse_event.state {
+                if let Some(ref command) = self.click_command {
+                    let _ = Command::new("sh").arg("-c").arg(&command).spawn();
+                }
+            }
+        }
+
+        if self.hover != mouse_event.is_some() {
+            self.hover = mouse_event.is_some();
+            let mut cache_lock = self.cache.lock().unwrap(); // TODO: Not unwrap?
+            *cache_lock = None;
+            return true;
+        }
+
         false
     }
 
@@ -78,18 +115,25 @@ impl Block for CommandBlock {
         let output = Command::new("sh").arg("-c").arg(&self.command).output()?;
         let text = String::from_utf8_lossy(&output.stdout);
 
+        let (fg_col, bg_col) = if self.hover {
+            (self.hover_fg_col, &self.hover_bg_col)
+        } else {
+            (self.fg_col, &self.bg_col)
+        };
+
         let mut text_block = TextBlock {
             bar_height: self.bar_height,
             font_height: self.font_height,
             font: self.font.clone(),
-            bg_col: self.bg_col.clone(),
-            fg_col: self.fg_col,
+            bg_col: bg_col.clone(),
+            fg_col: fg_col,
             text: text.to_string(),
             width: self.width,
             spacing: self.spacing,
             cache: None,
-            hover_bg_col: self.bg_col.clone(),
-            hover_fg_col: self.fg_col,
+            hover_bg_col: self.hover_bg_col.clone(),
+            hover_fg_col: self.hover_fg_col,
+            click_command: self.click_command.clone(),
             hover: false,
         };
 

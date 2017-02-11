@@ -5,12 +5,13 @@ use std::{thread, cmp};
 use std::io::{self, Write};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
-use image::{GenericImage, Pixel, DynamicImage, FilterType};
+use image::{GenericImage, Pixel, DynamicImage};
 
 use modules::Block;
 use mouse::MouseEvent;
 use parse_input::{self, Config};
 
+// TODO: Look for actual changes in modules before requesting redraw!
 pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
                          resize_in: Receiver<u32>,
                          mouse_in: Receiver<MouseEvent>)
@@ -137,7 +138,7 @@ fn render_blocks(blocks: &mut [Box<Block>]) -> Result<Vec<DynamicImage>, Box<Err
 }
 
 fn create_bar_from_config(config: &mut Config, bar_width: u32) -> Result<DynamicImage, Box<Error>> {
-    let mut bar_img = config.bg.resize_exact(bar_width, config.bar_height, FilterType::Triangle);
+    let mut bar_img = config.bg.crop(0, 0, bar_width, config.bar_height);
 
     if let Some(left_image) = combine_elements(&mut config.left_blocks, config.bar_height)? {
         combine_images(&mut bar_img, &left_image, 0);

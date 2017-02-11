@@ -1,9 +1,11 @@
 use std::cmp;
 use toml::Value;
 use std::error::Error;
+use std::process::Command;
 use std::sync::mpsc::Sender;
 use rusttype::{Font, Scale, point, PositionedGlyph};
 use image::{DynamicImage, GenericImage, Rgba, Pixel};
+use wayland_client::protocol::wl_pointer::ButtonState;
 
 use modules::Block;
 use mouse::MouseEvent;
@@ -21,6 +23,7 @@ pub struct TextBlock {
     pub cache: Option<DynamicImage>,
     pub hover_bg_col: DynamicImage,
     pub hover_fg_col: Rgba<u8>,
+    pub click_command: Option<String>,
     pub hover: bool,
 }
 
@@ -31,15 +34,17 @@ impl TextBlock {
         let text = text.as_str().ok_or("Text in text module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
 
-        // Read Hover values from toml
+        // Read mouse values from toml
         let mut hover_bg_col = config.bg.clone();
         let mut hover_fg_col = config.fg;
+        let mut click_command = None;
 
-        if let Some(hover_table) = value.lookup("hover") {
-            hover_bg_col = parse_input::toml_value_to_image(hover_table, "bg")
+        if let Some(hover_table) = value.lookup("mouse") {
+            hover_bg_col = parse_input::toml_value_to_image(hover_table, "hover_bg")
                 .unwrap_or(hover_bg_col);
-            hover_fg_col = parse_input::toml_value_to_rgba(hover_table, "fg")
+            hover_fg_col = parse_input::toml_value_to_rgba(hover_table, "hover_fg")
                 .unwrap_or(hover_fg_col);
+            click_command = parse_input::toml_value_to_string(hover_table, "command").ok();
         }
 
         Ok(Box::new(TextBlock {
@@ -54,6 +59,7 @@ impl TextBlock {
             cache: None,
             hover_bg_col: hover_bg_col,
             hover_fg_col: hover_fg_col,
+            click_command: click_command,
             hover: false,
         }))
     }
@@ -65,13 +71,21 @@ impl Block for TextBlock {
     }
 
     fn mouse_event(&mut self, mouse_event: Option<MouseEvent>) -> bool {
-        if self.hover != mouse_event.is_some() {
-            self.cache = None;
-            self.hover = mouse_event.is_some();
-            true
-        } else {
-            false
+        if let Some(ref mouse_event) = mouse_event {
+            if let Some(ButtonState::Released) = mouse_event.state {
+                if let Some(ref command) = self.click_command {
+                    let _ = Command::new("sh").arg("-c").arg(&command).spawn();
+                }
+            }
         }
+
+        if self.hover != mouse_event.is_some() {
+            self.hover = mouse_event.is_some();
+            self.cache = None;
+            return true;
+        }
+
+        false
     }
 
     fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
@@ -79,15 +93,10 @@ impl Block for TextBlock {
             return Ok(cache.clone());
         }
 
-        let bg_col = if self.hover {
-            &self.hover_bg_col
+        let (fg_col, bg_col) = if self.hover {
+            (&self.hover_fg_col, &self.hover_bg_col)
         } else {
-            &self.bg_col
-        };
-        let fg_col = if self.hover {
-            &self.hover_fg_col
-        } else {
-            &self.fg_col
+            (&self.fg_col, &self.bg_col)
         };
 
         let text = self.text.replace('\n', "").replace('\r', "").replace('\t', "");

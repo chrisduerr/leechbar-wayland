@@ -53,6 +53,8 @@ impl Clone for Config {
     }
 }
 
+// TODO: FAIL MORE OFTEN!
+// It should not be possible to specify an image as foreground without error
 pub fn read_config() -> Result<Config, Box<Error>> {
     let mut config_buf = String::new();
     let mut config_file = File::open(format!("{}/.config/leechbar/config.toml", get_home_dir()?))?;
