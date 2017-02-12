@@ -204,7 +204,7 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
     {
         let state = event_queue.state();
         let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
-        let shm = reexport(env, &registry, "wl_shm")?;
+        let shm: wl_shm::WlShm = reexport(env, &registry, "wl_shm")?;
 
         let mut wlc_unbugged = false;
         thread::spawn(move || {

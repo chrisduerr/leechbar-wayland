@@ -5,7 +5,7 @@ use std::{thread, cmp};
 use std::io::{self, Write};
 use byteorder::{WriteBytesExt, NativeEndian};
 use std::sync::mpsc::{Sender, Receiver, channel};
-use image::{GenericImage, Pixel, DynamicImage};
+use image::{ImageFormat, GenericImage, Pixel, DynamicImage};
 
 use modules::Block;
 use mouse::MouseEvent;
@@ -17,6 +17,7 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
                          mouse_in: Receiver<MouseEvent>)
                          -> Result<(), Box<Error>> {
     let mut output_width = 0;
+    let mut bg_img = DynamicImage::new_rgba8(0, 0);
     let (combined_out, combined_in) = channel();
 
     let mut config = parse_input::read_config()?;
@@ -58,7 +59,10 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
         match combined_in.recv() {
             Ok((width, mouse_event)) => {
                 if let Some(width) = width {
-                    output_width = width;
+                    if width != output_width {
+                        bg_img = config.bg.crop(0, 0, width, config.bar_height);
+                        output_width = width;
+                    }
                 } else if let Some(mouse_event) = mouse_event {
                     if !propagate_mouse_events(&mut config, output_width, mouse_event)? {
                         continue;
@@ -66,8 +70,8 @@ pub fn start_bar_creator(bar_img_out: Sender<(File, i32)>,
                 }
 
                 if output_width > 0 {
-                    let bar_img = create_bar_from_config(&mut config, output_width)?;
-                    bar_img_out.send((img_to_file(bar_img)?, config.bar_height as i32))?;
+                    let bar = create_bar_from_config(&mut config, bg_img.clone(), output_width)?;
+                    bar_img_out.send((img_to_file(bar)?, config.bar_height as i32))?;
                 }
             }
             Err(_) => Err("Config or Resize channel disconnected.".to_owned())?,
@@ -137,24 +141,25 @@ fn render_blocks(blocks: &mut [Box<Block>]) -> Result<Vec<DynamicImage>, Box<Err
         .collect::<Result<Vec<DynamicImage>, Box<Error>>>()?)
 }
 
-fn create_bar_from_config(config: &mut Config, bar_width: u32) -> Result<DynamicImage, Box<Error>> {
-    let mut bar_img = config.bg.crop(0, 0, bar_width, config.bar_height);
-
+fn create_bar_from_config(config: &mut Config,
+                          mut bg_img: DynamicImage,
+                          bar_width: u32)
+                          -> Result<DynamicImage, Box<Error>> {
     if let Some(left_image) = combine_elements(&mut config.left_blocks, config.bar_height)? {
-        combine_images(&mut bar_img, &left_image, 0);
+        combine_images(&mut bg_img, &left_image, 0);
     }
 
     if let Some(center_image) = combine_elements(&mut config.center_blocks, config.bar_height)? {
         let offset = bar_width / 2 - center_image.width() / 2;
-        combine_images(&mut bar_img, &center_image, offset);
+        combine_images(&mut bg_img, &center_image, offset);
     }
 
     if let Some(right_image) = combine_elements(&mut config.right_blocks, config.bar_height)? {
         let offset = bar_width - right_image.width();
-        combine_images(&mut bar_img, &right_image, offset);
+        combine_images(&mut bg_img, &right_image, offset);
     }
 
-    Ok(bar_img)
+    Ok(bg_img)
 }
 
 fn combine_elements(blocks: &mut [Box<Block>],
@@ -191,16 +196,20 @@ fn combine_images(first: &mut DynamicImage, second: &DynamicImage, offset: u32) 
 fn img_to_file(img: DynamicImage) -> Result<File, io::Error> {
     let mut tmp = tempfile::tempfile()?;
 
+    let mut bytes = Vec::new();
     for pixel in img.pixels() {
         let channels = pixel.2.channels();
         if channels.len() == 4 {
-            let _ = tmp.write_u32::<NativeEndian>((0xFF << 24) + ((channels[0] as u32) << 16) +
-                                                  ((channels[1] as u32) << 8) +
-                                                  channels[2] as u32);
+            bytes.push(channels[2]);    // Blue
+            bytes.push(channels[1]);    // Green
+            bytes.push(channels[0]);    // Red
+            bytes.push(channels[3]);    // Transparency
         }
     }
 
+    let _ = tmp.write(&bytes);
     let _ = tmp.flush();
+
     Ok(tmp)
 }
 
