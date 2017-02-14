@@ -1,14 +1,14 @@
+use std::fs;
 use std::env;
+use std::error;
 use std::thread;
-use std::fs::File;
-use std::error::Error;
+use std::sync::mpsc;
 use std::os::unix::io::AsRawFd;
-use std::sync::mpsc::{Receiver, Sender};
-use wayland_client::{self, EventQueueHandle, EnvHandler, RequestResult, cursor};
+use wayland_client;
 use wayland_client::protocol::{wl_compositor, wl_shell, wl_shm, wl_shell_surface, wl_seat,
                                wl_pointer, wl_surface, wl_output, wl_display, wl_registry};
 
-use mouse::MouseEvent;
+use mouse;
 use self::generated::client::desktop_shell;
 
 mod generated {
@@ -43,20 +43,20 @@ wayland_env!(WaylandEnv,
              shm: wl_shm::WlShm);
 
 struct EventHandler {
-    resize_out: Sender<u32>,
-    mouse_out: Sender<MouseEvent>,
-    cursor_theme: cursor::CursorTheme,
+    resize_out: mpsc::Sender<u32>,
+    mouse_out: mpsc::Sender<mouse::MouseEvent>,
+    cursor_theme: wayland_client::cursor::CursorTheme,
     cursor_surface: wl_surface::WlSurface,
     last_x: f64,
     last_y: f64,
 }
 
 impl EventHandler {
-    fn new(resize_out: Sender<u32>,
-           mouse_out: Sender<MouseEvent>,
-           cursor_theme: cursor::CursorTheme,
+    fn new(resize_out: mpsc::Sender<u32>,
+           mouse_out: mpsc::Sender<mouse::MouseEvent>,
+           cursor_theme: wayland_client::cursor::CursorTheme,
            cursor_surface: wl_surface::WlSurface)
-           -> Result<EventHandler, Box<Error>> {
+           -> Result<EventHandler, Box<error::Error>> {
         Ok(EventHandler {
             resize_out: resize_out,
             mouse_out: mouse_out,
@@ -70,7 +70,7 @@ impl EventHandler {
 
 impl wl_shell_surface::Handler for EventHandler {
     fn ping(&mut self,
-            _: &mut EventQueueHandle,
+            _: &mut wayland_client::EventQueueHandle,
             me: &wl_shell_surface::WlShellSurface,
             serial: u32) {
         me.pong(serial);
@@ -82,7 +82,7 @@ declare_handler!(EventHandler,
 
 impl wl_pointer::Handler for EventHandler {
     fn motion(&mut self,
-              _evqh: &mut EventQueueHandle,
+              _evqh: &mut wayland_client::EventQueueHandle,
               _proxy: &wl_pointer::WlPointer,
               _time: u32,
               surface_x: f64,
@@ -90,7 +90,7 @@ impl wl_pointer::Handler for EventHandler {
         self.last_x = surface_x;
         self.last_y = surface_y;
 
-        let _ = self.mouse_out.send(MouseEvent {
+        let _ = self.mouse_out.send(mouse::MouseEvent {
             button: None,
             state: None,
             x: surface_x,
@@ -99,13 +99,13 @@ impl wl_pointer::Handler for EventHandler {
     }
 
     fn button(&mut self,
-              _evqh: &mut EventQueueHandle,
+              _evqh: &mut wayland_client::EventQueueHandle,
               _proxy: &wl_pointer::WlPointer,
               _serial: u32,
               _time: u32,
               button: u32,
               state: wl_pointer::ButtonState) {
-        let _ = self.mouse_out.send(MouseEvent {
+        let _ = self.mouse_out.send(mouse::MouseEvent {
             button: Some(button),
             state: Some(state),
             x: self.last_x,
@@ -114,11 +114,11 @@ impl wl_pointer::Handler for EventHandler {
     }
 
     fn leave(&mut self,
-             _evqh: &mut EventQueueHandle,
+             _evqh: &mut wayland_client::EventQueueHandle,
              _proxy: &wl_pointer::WlPointer,
              _serial: u32,
              _surface: &wl_surface::WlSurface) {
-        let _ = self.mouse_out.send(MouseEvent {
+        let _ = self.mouse_out.send(mouse::MouseEvent {
             button: None,
             state: None,
             x: -1f64,
@@ -127,7 +127,7 @@ impl wl_pointer::Handler for EventHandler {
     }
 
     fn enter(&mut self,
-             _evqh: &mut EventQueueHandle,
+             _evqh: &mut wayland_client::EventQueueHandle,
              proxy: &wl_pointer::WlPointer,
              serial: u32,
              _surface: &wl_surface::WlSurface,
@@ -145,7 +145,7 @@ declare_handler!(EventHandler, wl_pointer::Handler, wl_pointer::WlPointer);
 
 impl wl_output::Handler for EventHandler {
     fn mode(&mut self,
-            _evqh: &mut EventQueueHandle,
+            _evqh: &mut wayland_client::EventQueueHandle,
             _proxy: &wl_output::WlOutput,
             _flags: wl_output::Mode,
             width: i32,
@@ -156,23 +156,27 @@ impl wl_output::Handler for EventHandler {
 }
 declare_handler!(EventHandler, wl_output::Handler, wl_output::WlOutput);
 
-pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
-                           resize_out: Sender<u32>,
-                           mouse_out: Sender<MouseEvent>)
-                           -> Result<(), Box<Error>> {
+pub fn wayland_server_available() -> bool {
+    !wayland_client::default_connect().is_err()
+}
+
+pub fn start_wayland_panel(bar_img_in: mpsc::Receiver<(fs::File, i32)>,
+                           resize_out: mpsc::Sender<u32>,
+                           mouse_out: mpsc::Sender<mouse::MouseEvent>)
+                           -> Result<(), Box<error::Error>> {
     let (display, mut event_queue) = match wayland_client::default_connect() {
         Ok(ret) => ret,
         Err(e) => Err(format!("Cannot connect to wayland server: {:?}", e))?,
     };
 
     let registry = request_result_to_result(display.get_registry(), "Proxy already destroyed.")?;
-    event_queue.add_handler(EnvHandler::<WaylandEnv>::new());
-    event_queue.register::<_, EnvHandler<WaylandEnv>>(&registry, 0);
+    event_queue.add_handler(wayland_client::EnvHandler::<WaylandEnv>::new());
+    event_queue.register::<_, wayland_client::EnvHandler<WaylandEnv>>(&registry, 0);
     event_queue.sync_roundtrip()?;
 
     let (shell_surface, pointer, surface, output, cursor_surface, cursor_theme) = {
         let state = event_queue.state();
-        let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
+        let env = state.get_handler::<wayland_client::EnvHandler<WaylandEnv>>(0);
 
         let surface = request_result_to_result(env.compositor.create_surface(),
                                                "Compositor already destroyed.")?;
@@ -203,7 +207,7 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
 
     {
         let state = event_queue.state();
-        let env = state.get_handler::<EnvHandler<WaylandEnv>>(0);
+        let env = state.get_handler::<wayland_client::EnvHandler<WaylandEnv>>(0);
         let shm: wl_shm::WlShm = reexport(env, &registry, "wl_shm")?;
 
         let mut wlc_unbugged = false;
@@ -232,16 +236,16 @@ pub fn start_wayland_panel(bar_img_in: Receiver<(File, i32)>,
     }
 }
 
-fn draw_bar(bar_img: &File,
+fn draw_bar(bar_img: &fs::File,
             shm: &wl_shm::WlShm,
             surface: &wl_surface::WlSurface,
             display: &wl_display::WlDisplay,
             bar_width: i32,
             bar_height: i32)
-            -> Result<(), Box<Error>> {
+            -> Result<(), Box<error::Error>> {
     let pool = match shm.create_pool(bar_img.as_raw_fd(), bar_height * bar_width * 4) {
-        RequestResult::Sent(pool) => pool,
-        RequestResult::Destroyed => Err("SHM already destroyed.".to_owned())?,
+        wayland_client::RequestResult::Sent(pool) => pool,
+        wayland_client::RequestResult::Destroyed => Err("SHM already destroyed.".to_owned())?,
     };
 
     let buffer = match pool.create_buffer(0,
@@ -249,8 +253,8 @@ fn draw_bar(bar_img: &File,
                                           bar_height,
                                           bar_width * 4,
                                           wl_shm::Format::Argb8888) {
-        RequestResult::Sent(pool) => pool,
-        RequestResult::Destroyed => Err("Pool already destroyed.".to_owned())?,
+        wayland_client::RequestResult::Sent(pool) => pool,
+        wayland_client::RequestResult::Destroyed => Err("Pool already destroyed.".to_owned())?,
     };
 
     surface.attach(Some(&buffer), 0, 0);
@@ -262,17 +266,17 @@ fn draw_bar(bar_img: &File,
     Ok(())
 }
 
-fn load_cursor_theme(shm: &wl_shm::WlShm) -> cursor::CursorTheme {
+fn load_cursor_theme(shm: &wl_shm::WlShm) -> wayland_client::cursor::CursorTheme {
     let name = env::var("SWAY_CURSOR_THEME").unwrap_or_else(|_| String::from("default"));
     let size = env::var("SWAY_CURSOR_SIZE").unwrap_or_else(|_| String::from("16"));
     let size = size.parse().unwrap_or(16);
-    cursor::load_theme(Some(&name), size, shm)
+    wayland_client::cursor::load_theme(Some(&name), size, shm)
 }
 
-fn reexport<T: wayland_client::Proxy>(env: &EnvHandler<WaylandEnv>,
+fn reexport<T: wayland_client::Proxy>(env: &wayland_client::EnvHandler<WaylandEnv>,
                                       registry: &wl_registry::WlRegistry,
                                       interface_name: &str)
-                                      -> Result<T, Box<Error>> {
+                                      -> Result<T, Box<error::Error>> {
     for &(name, ref interface, version) in env.globals() {
         if interface == interface_name {
             return Ok(request_result_to_result(registry.bind::<T>(version, name),
@@ -282,11 +286,11 @@ fn reexport<T: wayland_client::Proxy>(env: &EnvHandler<WaylandEnv>,
     Err(format!("Unable to find {} in globals.", interface_name))?
 }
 
-fn request_result_to_result<T>(request_result: RequestResult<T>,
+fn request_result_to_result<T>(request_result: wayland_client::RequestResult<T>,
                                error_msg: &str)
                                -> Result<T, String> {
     match request_result {
-        RequestResult::Sent(result) => Ok(result),
-        RequestResult::Destroyed => Err(error_msg.to_owned()),
+        wayland_client::RequestResult::Sent(result) => Ok(result),
+        wayland_client::RequestResult::Destroyed => Err(error_msg.to_owned()),
     }
 }

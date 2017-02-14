@@ -1,42 +1,44 @@
+use toml;
+use image;
 use std::cmp;
+use rusttype;
+use std::time;
+use std::error;
 use std::thread;
-use toml::Value;
-use rusttype::Font;
-use std::error::Error;
-use std::time::Duration;
-use std::process::Command;
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc::Sender;
-use image::{DynamicImage, Rgba};
-use wayland_client::protocol::wl_pointer::ButtonState;
+use std::process;
+use std::sync::{self, mpsc};
+use wayland_client::protocol::wl_pointer;
 
-use modules::Block;
-use mouse::MouseEvent;
-use modules::text::TextBlock;
-use parse_input::{self, Config};
+use mouse;
+use modules;
+use parse_input;
+use modules::text;
 
 pub struct CommandBlock {
     bar_height: u32,
     font_height: u32,
-    font: Font<'static>,
-    bg_col: DynamicImage,
-    fg_col: Rgba<u8>,
+    font: rusttype::Font<'static>,
+    bg_col: image::DynamicImage,
+    fg_col: image::Rgba<u8>,
     width: u32,
     spacing: u32,
     command: String,
     interval: u32,
-    cache: Arc<Mutex<Option<DynamicImage>>>,
-    hover_bg_col: DynamicImage,
-    hover_fg_col: Rgba<u8>,
+    cache: sync::Arc<sync::Mutex<Option<image::DynamicImage>>>,
+    hover_bg_col: image::DynamicImage,
+    hover_fg_col: image::Rgba<u8>,
     click_command: Option<String>,
     hover: bool,
 }
 
 // Unwraps cannot fail
 impl CommandBlock {
-    pub fn create(config: Config, value: &Value) -> Result<Box<Block>, Box<Error>> {
+    pub fn create(config: parse_input::Config,
+                  value: &toml::Value)
+                  -> Result<Box<modules::Block>, Box<error::Error>> {
         let command = value.lookup("command").ok_or("Could not find command in a command module.")?;
-        let command = command.as_str().ok_or("Command in command module is not a String.")?;
+        let command = command.as_str()
+            .ok_or("process::Command in command module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
 
         // Read mouse values from toml
@@ -62,7 +64,7 @@ impl CommandBlock {
             spacing: config.spacing,
             command: command.to_owned(),
             interval: config.interval,
-            cache: Arc::new(Mutex::new(None)),
+            cache: sync::Arc::new(sync::Mutex::new(None)),
             hover_bg_col: hover_bg_col,
             hover_fg_col: hover_fg_col,
             click_command: click_command,
@@ -71,14 +73,15 @@ impl CommandBlock {
     }
 }
 
-impl Block for CommandBlock {
-    fn start_interval(&mut self, interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
+impl modules::Block for CommandBlock {
+    fn start_interval(&mut self,
+                      interval_out: mpsc::Sender<(Option<u32>, Option<mouse::MouseEvent>)>) {
         if self.interval > 0 {
             let interval = self.interval as u64;
             let cache = self.cache.clone();
             thread::spawn(move || {
                 loop {
-                    thread::sleep(Duration::from_millis(interval));
+                    thread::sleep(time::Duration::from_millis(interval));
                     let mut cache_lock = cache.lock().unwrap(); // TODO: Not unwrap?
                     *cache_lock = None;
                     interval_out.send((None, None)).unwrap(); // TODO: Not unwrap?
@@ -87,11 +90,11 @@ impl Block for CommandBlock {
         }
     }
 
-    fn mouse_event(&mut self, mouse_event: Option<MouseEvent>) -> bool {
+    fn mouse_event(&mut self, mouse_event: Option<mouse::MouseEvent>) -> bool {
         if let Some(ref mouse_event) = mouse_event {
-            if let Some(ButtonState::Released) = mouse_event.state {
+            if let Some(wl_pointer::ButtonState::Released) = mouse_event.state {
                 if let Some(ref command) = self.click_command {
-                    let _ = Command::new("sh").arg("-c").arg(&command).spawn();
+                    let _ = process::Command::new("sh").arg("-c").arg(&command).spawn();
                 }
             }
         }
@@ -106,13 +109,13 @@ impl Block for CommandBlock {
         false
     }
 
-    fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
+    fn render(&mut self) -> Result<image::DynamicImage, Box<error::Error>> {
         let mut cache = self.cache.lock().map_err(|e| e.to_string())?;
         if let Some(ref cache) = *cache {
             return Ok(cache.clone());
         }
 
-        let output = Command::new("sh").arg("-c").arg(&self.command).output()?;
+        let output = process::Command::new("sh").arg("-c").arg(&self.command).output()?;
         let text = String::from_utf8_lossy(&output.stdout);
 
         let (fg_col, bg_col) = if self.hover {
@@ -121,7 +124,7 @@ impl Block for CommandBlock {
             (self.fg_col, &self.bg_col)
         };
 
-        let mut text_block = TextBlock {
+        let mut text_block = text::TextBlock {
             bar_height: self.bar_height,
             font_height: self.font_height,
             font: self.font.clone(),

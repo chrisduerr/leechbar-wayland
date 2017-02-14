@@ -8,12 +8,13 @@ build = "build.rs"
 wayland-scanner = "0.7.6"
 
 [dependencies]
+xcb-util = {version = "0.1.7", features = ["icccm", "ewmh", "thread"] }
 wayland-client = "0.7.6"
 wayland-sys = "0.7.6"
 lazy_static = "0.2.2"
-byteorder = "0.5.3"
 tempfile = "2.1.4"
 rusttype = "0.2.1"
 image = "0.10.4"
 regex = "0.2.1"
 toml = "0.2.1"
+xcb = "0.7.6"

@@ -1,35 +1,37 @@
+use toml;
 use std::cmp;
-use toml::Value;
-use std::error::Error;
-use std::process::Command;
-use std::sync::mpsc::Sender;
-use rusttype::{Font, Scale, point, PositionedGlyph};
-use image::{DynamicImage, GenericImage, Rgba, Pixel};
-use wayland_client::protocol::wl_pointer::ButtonState;
+use rusttype;
+use std::error;
+use std::process;
+use std::sync::mpsc;
+use image::{self, GenericImage, Pixel};
+use wayland_client::protocol::wl_pointer;
 
-use modules::Block;
-use mouse::MouseEvent;
-use parse_input::{self, Config};
+use mouse;
+use modules;
+use parse_input;
 
 pub struct TextBlock {
     pub bar_height: u32,
     pub font_height: u32,
-    pub font: Font<'static>,
-    pub bg_col: DynamicImage,
-    pub fg_col: Rgba<u8>,
+    pub font: rusttype::Font<'static>,
+    pub bg_col: image::DynamicImage,
+    pub fg_col: image::Rgba<u8>,
     pub text: String,
     pub width: u32,
     pub spacing: u32,
-    pub cache: Option<DynamicImage>,
-    pub hover_bg_col: DynamicImage,
-    pub hover_fg_col: Rgba<u8>,
+    pub cache: Option<image::DynamicImage>,
+    pub hover_bg_col: image::DynamicImage,
+    pub hover_fg_col: image::Rgba<u8>,
     pub click_command: Option<String>,
     pub hover: bool,
 }
 
 // Unwraps cannot fail
 impl TextBlock {
-    pub fn create(config: Config, value: &Value) -> Result<Box<Block>, Box<Error>> {
+    pub fn create(config: parse_input::Config,
+                  value: &toml::Value)
+                  -> Result<Box<modules::Block>, Box<error::Error>> {
         let text = value.lookup("text").ok_or("Could not find text in a text module.")?;
         let text = text.as_str().ok_or("Text in text module is not a String.")?;
         let font_height = cmp::min(config.bar_height, config.font_height.unwrap());
@@ -65,16 +67,17 @@ impl TextBlock {
     }
 }
 
-impl Block for TextBlock {
-    fn start_interval(&mut self, _interval_out: Sender<(Option<u32>, Option<MouseEvent>)>) {
+impl modules::Block for TextBlock {
+    fn start_interval(&mut self,
+                      _interval_out: mpsc::Sender<(Option<u32>, Option<mouse::MouseEvent>)>) {
         // TextBlock is never updated
     }
 
-    fn mouse_event(&mut self, mouse_event: Option<MouseEvent>) -> bool {
+    fn mouse_event(&mut self, mouse_event: Option<mouse::MouseEvent>) -> bool {
         if let Some(ref mouse_event) = mouse_event {
-            if let Some(ButtonState::Released) = mouse_event.state {
+            if let Some(wl_pointer::ButtonState::Released) = mouse_event.state {
                 if let Some(ref command) = self.click_command {
-                    let _ = Command::new("sh").arg("-c").arg(&command).spawn();
+                    let _ = process::Command::new("sh").arg("-c").arg(&command).spawn();
                 }
             }
         }
@@ -88,7 +91,7 @@ impl Block for TextBlock {
         false
     }
 
-    fn render(&mut self) -> Result<DynamicImage, Box<Error>> {
+    fn render(&mut self) -> Result<image::DynamicImage, Box<error::Error>> {
         if let Some(ref cache) = self.cache {
             return Ok(cache.clone());
         }
@@ -101,15 +104,15 @@ impl Block for TextBlock {
 
         let text = self.text.replace('\n', "").replace('\r', "").replace('\t', "");
 
-        let scale = Scale {
+        let scale = rusttype::Scale {
             x: self.font_height as f32,
             y: self.font_height as f32,
         };
 
         let v_metrics = self.font.v_metrics(scale);
-        let offset = point(0.0, v_metrics.ascent);
+        let offset = rusttype::point(0.0, v_metrics.ascent);
 
-        let glyphs: Vec<PositionedGlyph> = self.font
+        let glyphs: Vec<rusttype::PositionedGlyph> = self.font
             .layout(&text, scale, offset)
             .collect();
 
@@ -132,7 +135,7 @@ impl Block for TextBlock {
         }
         width += self.spacing * 2;
 
-        let mut image = DynamicImage::new_rgba8(width, self.bar_height);
+        let mut image = image::DynamicImage::new_rgba8(width, self.bar_height);
         for x in 0..width {
             for y in 0..self.bar_height {
                 let bgcol_x = x % bg_col.width();

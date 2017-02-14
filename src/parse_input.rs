@@ -1,21 +1,21 @@
 use toml;
+use std::fs;
+use rusttype;
+use std::num;
+use std::path;
+use std::error;
 use std::io::Read;
-use std::fs::File;
 use std::{io, env};
-use std::path::Path;
 use std::boxed::Box;
-use std::error::Error;
-use std::num::ParseIntError;
-use rusttype::{Font, FontCollection};
-use image::{self, Rgba, DynamicImage, GenericImage};
+use image::{self, GenericImage};
 
 use modules::{MODULES, Block};
 
 pub struct Config {
     // Defaults for each element:
-    pub bg: DynamicImage,
-    pub fg: Rgba<u8>,
-    pub font: Option<Font<'static>>,
+    pub bg: image::DynamicImage,
+    pub fg: image::Rgba<u8>,
+    pub font: Option<rusttype::Font<'static>>,
     pub font_height: Option<u32>,
     pub resize: bool, // TODO: Currently never used by anything
     pub width: u32,
@@ -55,9 +55,10 @@ impl Clone for Config {
 
 // TODO: FAIL MORE OFTEN!
 // It should not be possible to specify an image as foreground without error
-pub fn read_config() -> Result<Config, Box<Error>> {
+pub fn read_config() -> Result<Config, Box<error::Error>> {
     let mut config_buf = String::new();
-    let mut config_file = File::open(format!("{}/.config/leechbar/config.toml", get_home_dir()?))?;
+    let mut config_file = fs::File::open(format!("{}/.config/leechbar/config.toml",
+                                                 get_home_dir()?))?;
     config_file.read_to_string(&mut config_buf)?;
     config_buf = config_buf.replace("\\", "\\\\"); // Escape escape characters in config file
     let config_val: toml::Value = config_buf.parse().map_err(|_| "Unable to parse config.")?;
@@ -65,13 +66,13 @@ pub fn read_config() -> Result<Config, Box<Error>> {
     Ok(parse_settings(&config_val)?)
 }
 
-fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<Error>> {
+fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<error::Error>> {
     let general = config_val.lookup("general").ok_or("Unable to find [general] in the config.")?;
 
-    let mut black_img = DynamicImage::new_rgba8(1, 1);
-    black_img.put_pixel(0, 0, Rgba::<u8> { data: [0, 0, 0, 255] });
+    let mut black_img = image::DynamicImage::new_rgba8(1, 1);
+    black_img.put_pixel(0, 0, image::Rgba::<u8> { data: [0, 0, 0, 255] });
     let mut config = Config {
-        fg: Rgba::<u8> { data: [255, 255, 255, 255] },
+        fg: image::Rgba::<u8> { data: [255, 255, 255, 255] },
         bg: black_img,
         font: None,
         font_height: None,
@@ -100,7 +101,9 @@ fn parse_settings(config_val: &toml::Value) -> Result<Config, Box<Error>> {
 // Creates a Block from a toml field
 // Depending on "is_config" it raises errors if certain fields are missing
 // TODO: Fall back to already existing values instead of using fallback.fg etc
-fn block_from_toml(general_val: &toml::Value, fallback: &Config) -> Result<Config, Box<Error>> {
+fn block_from_toml(general_val: &toml::Value,
+                   fallback: &Config)
+                   -> Result<Config, Box<error::Error>> {
     let mut config = fallback.clone();
 
     config.bg = toml_value_to_image(general_val, "bg").unwrap_or_else(|_| fallback.bg.clone());
@@ -111,11 +114,12 @@ fn block_from_toml(general_val: &toml::Value, fallback: &Config) -> Result<Confi
     config.interval = toml_value_to_integer(general_val, "interval").unwrap_or(fallback.interval);
 
     // Unwrap because if these missing it's over anyways.
-    config.font = Some(toml_value_to_font(general_val, "font")
-        .unwrap_or_else(|_| fallback.font.clone().ok_or("Font required in [general].").unwrap()));
+    config.font = Some(toml_value_to_font(general_val, "font").unwrap_or_else(|_| {
+        fallback.font.clone().ok_or("rusttype::Font required in [general].").unwrap()
+    }));
     config.font_height = Some(toml_value_to_integer(general_val, "font_height")
         .unwrap_or_else(|_| {
-            fallback.font_height.ok_or("Font Height required in [general].").unwrap()
+            fallback.font_height.ok_or("rusttype::Font Height required in [general].").unwrap()
         }));
 
     Ok(config)
@@ -125,7 +129,7 @@ fn toml_value_to_blocks(general_val: &toml::Value,
                         config_val: &toml::Value,
                         name: &str,
                         config: &Config)
-                        -> Result<Vec<Box<Block>>, Box<Error>> {
+                        -> Result<Vec<Box<Block>>, Box<error::Error>> {
     let blocks_text = toml_value_to_string(general_val, name)?;
     let blocks_split = blocks_text.split(' ');
 
@@ -167,18 +171,20 @@ pub fn toml_value_to_string(general_val: &toml::Value, name: &str) -> Result<Str
     Ok(value.as_str().ok_or("Toml value not a string.")?.to_owned())
 }
 
-pub fn toml_value_to_rgba(general_val: &toml::Value, name: &str) -> Result<Rgba<u8>, Box<Error>> {
+pub fn toml_value_to_rgba(general_val: &toml::Value,
+                          name: &str)
+                          -> Result<image::Rgba<u8>, Box<error::Error>> {
     let col_string = toml_value_to_string(general_val, name)?;
     Ok(string_to_rgba(&col_string)?)
 }
 
 pub fn toml_value_to_image(general_val: &toml::Value,
                            name: &str)
-                           -> Result<DynamicImage, Box<Error>> {
+                           -> Result<image::DynamicImage, Box<error::Error>> {
     let path = toml_value_to_string(general_val, name)?;
 
     if path.starts_with('#') {
-        let mut img = DynamicImage::new_rgba8(1, 1);
+        let mut img = image::DynamicImage::new_rgba8(1, 1);
         let str_rgba = string_to_rgba(&path)?;
         img.put_pixel(0, 0, str_rgba);
 
@@ -187,27 +193,27 @@ pub fn toml_value_to_image(general_val: &toml::Value,
         let home = get_home_dir()?;
         let path = path.replace('~', &home).replace("$HOME", &home);
 
-        Ok(image::open(&Path::new(&path))?)
+        Ok(image::open(&path::Path::new(&path))?)
     }
 }
 
 // Uses string as path to load a font file
 pub fn toml_value_to_font(general_val: &toml::Value,
                           name: &str)
-                          -> Result<Font<'static>, Box<Error>> {
+                          -> Result<rusttype::Font<'static>, Box<error::Error>> {
     let home = get_home_dir()?;
     let font_string =
         toml_value_to_string(general_val, name)?.replace("$", &home).replace("~", &home);
 
-    let font_file = File::open(&font_string)?;
+    let font_file = fs::File::open(&font_string)?;
     let font_data = font_file.bytes().collect::<Result<Vec<u8>, io::Error>>()?;
-    let collection = FontCollection::from_bytes(font_data);
+    let collection = rusttype::FontCollection::from_bytes(font_data);
     let font = collection.into_font().ok_or("Please only use valid TTF fonts.")?;
 
     Ok(font)
 }
 
-fn string_to_rgba(col_string: &str) -> Result<Rgba<u8>, ParseIntError> {
+fn string_to_rgba(col_string: &str) -> Result<image::Rgba<u8>, num::ParseIntError> {
     let red_string = col_string[1..3].to_lowercase();
     let blue_string = col_string[5..7].to_lowercase();
     let green_string = col_string[3..5].to_lowercase();
@@ -224,7 +230,7 @@ fn string_to_rgba(col_string: &str) -> Result<Rgba<u8>, ParseIntError> {
     let green = u8::from_str_radix(&green_string, 16)?;
     let alpha = u8::from_str_radix(&alpha_string, 16)?;
 
-    Ok(Rgba { data: [red, green, blue, alpha] })
+    Ok(image::Rgba { data: [red, green, blue, alpha] })
 }
 
 fn get_home_dir() -> Result<String, String> {

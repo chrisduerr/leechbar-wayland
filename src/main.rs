@@ -4,16 +4,18 @@ extern crate wayland_client;
 extern crate wayland_sys;
 #[macro_use]
 extern crate lazy_static;
-extern crate byteorder;
 extern crate tempfile;
 extern crate rusttype;
+extern crate xcb_util;
 extern crate image;
 extern crate regex;
 extern crate toml;
+extern crate xcb;
 
 use std::thread;
-use std::sync::mpsc::channel;
+use std::sync::mpsc;
 
+mod xorg;
 mod mouse;
 mod modules;
 mod wayland;
@@ -22,10 +24,11 @@ mod parse_input;
 
 // TODO: Logging instead of unwrapping
 // TODO: Immortality -> Auto-Revive
+// TODO: Don't use libs without prefix, so image::GenericImage instead of GenericImage
 fn main() {
-    let (bar_img_out, bar_img_in) = channel();
-    let (resize_out, resize_in) = channel();
-    let (mouse_out, mouse_in) = channel();
+    let (bar_img_out, bar_img_in) = mpsc::channel();
+    let (resize_out, resize_in) = mpsc::channel();
+    let (mouse_out, mouse_in) = mpsc::channel();
 
     {
         thread::spawn(move || {
@@ -33,5 +36,9 @@ fn main() {
         });
     }
 
-    wayland::start_wayland_panel(bar_img_in, resize_out, mouse_out).unwrap();
+    if wayland::wayland_server_available() {
+        wayland::start_wayland_panel(bar_img_in, resize_out, mouse_out).unwrap();
+    } else {
+        xorg::start_xorg_panel(bar_img_in, resize_out, mouse_out).unwrap();
+    }
 }
