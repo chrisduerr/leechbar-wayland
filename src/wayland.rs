@@ -105,6 +105,11 @@ impl wl_pointer::Handler for EventHandler {
               _time: u32,
               button: u32,
               state: wl_pointer::ButtonState) {
+        let state = match state {
+            wl_pointer::ButtonState::Pressed => mouse::ButtonState::PRESSED,
+            wl_pointer::ButtonState::Released => mouse::ButtonState::RELEASED,
+        };
+
         let _ = self.mouse_out.send(mouse::MouseEvent {
             button: Some(button),
             state: Some(state),

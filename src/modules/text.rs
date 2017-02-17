@@ -5,7 +5,6 @@ use std::error;
 use std::process;
 use std::sync::mpsc;
 use image::{self, GenericImage, Pixel};
-use wayland_client::protocol::wl_pointer;
 
 use mouse;
 use modules;
@@ -75,7 +74,7 @@ impl modules::Block for TextBlock {
 
     fn mouse_event(&mut self, mouse_event: Option<mouse::MouseEvent>) -> bool {
         if let Some(ref mouse_event) = mouse_event {
-            if let Some(wl_pointer::ButtonState::Released) = mouse_event.state {
+            if let Some(mouse::ButtonState::RELEASED) = mouse_event.state {
                 if let Some(ref command) = self.click_command {
                     let _ = process::Command::new("sh").arg("-c").arg(&command).spawn();
                 }
